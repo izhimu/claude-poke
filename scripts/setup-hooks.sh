@@ -24,19 +24,16 @@ case "$OS" in
     Linux*)
         SETTINGS_DIR="$HOME/.claude"
         HOOKS_DIR="$SETTINGS_DIR/hooks"
-        STATUS_FILE="/tmp/claude-pet-status.json"
         SCRIPT_NAME="set-status.sh"
         ;;
     Darwin*)
         SETTINGS_DIR="$HOME/.claude"
         HOOKS_DIR="$SETTINGS_DIR/hooks"
-        STATUS_FILE="/tmp/claude-pet-status.json"
         SCRIPT_NAME="set-status.sh"
         ;;
     CYGWIN*|MINGW32*|MSYS*|MINGW*)
         SETTINGS_DIR="$HOME/.claude"
         HOOKS_DIR="$SETTINGS_DIR/hooks"
-        STATUS_FILE="$TEMP/claude-pet-status.json"
         SCRIPT_NAME="set-status.ps1"
         echo -e "${YELLOW}⚠️  Windows detected. Please run set-status.ps1 manually.${NC}"
         ;;

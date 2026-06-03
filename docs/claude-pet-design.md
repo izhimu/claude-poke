@@ -25,20 +25,20 @@
 │                  hooks 调用状态脚本                           │
 │                          │                                   │
 │                          ▼                                   │
-│              写入状态文件（跨平台路径）                       │
+│              curl POST JSON 到本地 HTTP 服务                 │
 └──────────────────────────────────────────────────────────────┘
-                           │
+                           │  HTTP POST (127.0.0.1:9527/status)
                            ▼
 ┌──────────────────────────────────────────────────────────────┐
 │                    Rust 桌面宠物                              │
 │                                                              │
 │  ┌─────────────────────────────────────────────────────┐    │
-│  │              状态监听模块 (Monitor)                   │    │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐ │    │
-│  │  │ 文件监听    │  │ 进程检测    │  │ 状态解析    │ │    │
-│  │  │ (notify)    │  │ (sysinfo)   │  │ (serde)     │ │    │
-│  │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘ │    │
-│  │         └────────────────┼────────────────┘         │    │
+│  │              状态接收模块 (Monitor)                   │    │
+│  │  ┌─────────────────────┐  ┌───────────────────────┐ │    │
+│  │  │ HTTP Server         │  │ 状态解析              │ │    │
+│  │  │ (tiny_http, 同步)   │  │ (serde)               │ │    │
+│  │  └──────────┬──────────┘  └──────────┬────────────┘ │    │
+│  │             └────────────────────────┘              │    │
 │  │                          ▼                          │    │
 │  │                   PetState 状态机                   │    │
 │  └─────────────────────────┬───────────────────────────┘    │
@@ -76,10 +76,9 @@
 | 窗口管理 | `winit` | 0.30 | 跨平台透明窗口 |
 | 2D渲染 | `pixels` | 0.14 | 像素级渲染 |
 | 图片加载 | `image` | 0.25 | PNG/GIF 解码 |
-| 文件监听 | `notify` | 7.0 | 跨平台文件系统事件 |
+| HTTP 服务 | `tiny_http` | 0.12 | 本地 HTTP 状态接收 |
 | 系统托盘 | `tray-icon` | 0.19 | 托盘菜单 |
 | 进程检测 | `sysinfo` | 0.31 | 检测 Claude 进程 |
-| 异步运行时 | `tokio` | 1.x | 异步任务管理 |
 | 序列化 | `serde` + `serde_json` | 1.x | JSON 解析 |
 | 路径管理 | `dirs` | 5.0 | 跨平台目录路径 |
 
@@ -118,11 +117,9 @@ impl Default for PetState {
 }
 ```
 
-### 2.2 状态文件格式
+### 2.2 状态 JSON 格式
 
-状态文件路径：
-- **Windows**: `%TEMP%\claude-pet-status.json`
-- **macOS/Linux**: `/tmp/claude-pet-status.json`
+HTTP POST 请求体（`POST http://127.0.0.1:9527/status`）：
 
 ```json
 {
@@ -133,18 +130,24 @@ impl Default for PetState {
 }
 ```
 
-### 2.3 监听策略（双保险）
+端口可通过环境变量 `CLAUDE_POKE_PORT` 覆盖，默认 9527。
+
+### 2.3 通信策略
 
 ```
-主策略：文件监听（notify 库）
-  ├─ 优点：实时性好，事件驱动
-  └─ 缺点：某些系统可能有延迟
+Hook 脚本 → curl / Invoke-RestMethod → HTTP POST
+                                          │
+                                          ▼
+                         tiny_http 本地服务 (127.0.0.1:9527)
+                                          │
+                                          ▼
+                              mpsc channel → 主事件循环
 
-备选：轮询检测（100ms 间隔）
-  ├─ 优点：兼容性好
-  └─ 缺点：略耗资源
-
-实际实现：先用 notify，失败时自动降级为轮询
+优点：
+  ├─ 零轮询，即时到达
+  ├─ 依赖极简（tiny_http，同步，无异步运行时）
+  ├─ hook 端用 curl 即可，无额外工具依赖
+  └─ 便于未来桥接 BLE/WiFi（daemon 模式）
 ```
 
 ### 2.4 跨平台状态脚本
@@ -152,34 +155,52 @@ impl Default for PetState {
 **状态更新脚本** `set-status.sh`（Linux/macOS）:
 ```bash
 #!/bin/bash
-STATE_FILE="/tmp/claude-pet-status.json"
-TIMESTAMP=$(date +%s%3N)
+PORT="${CLAUDE_POKE_PORT:-9527}"
+TIMESTAMP=$(date +%s%N | cut -c1-13)
 SESSION_ID="${CLAUDE_SESSION_ID:-unknown}"
+STATE="${1:-Sleeping}"
+MESSAGE="${2:-}"
 
-cat > "$STATE_FILE" << EOF
-{
-    "state": "$1",
-    "timestamp": $TIMESTAMP,
-    "session_id": "$SESSION_ID",
-    "message": "$2"
-}
-EOF
+STATE_JSON="\"$STATE\""
+if [ "$STATE" = "Notify" ] && [ -n "$MESSAGE" ]; then
+    STATE_JSON="{\"Notify\": \"$MESSAGE\"}"
+fi
+
+JSON="{\"state\":$STATE_JSON,\"timestamp\":$TIMESTAMP,\"session_id\":\"$SESSION_ID\",\"message\":\"$MESSAGE\"}"
+
+curl -s -X POST "http://127.0.0.1:${PORT}/status" \
+    -H "Content-Type: application/json" \
+    -d "$JSON" \
+    > /dev/null 2>&1 &
 ```
 
 **状态更新脚本** `set-status.ps1`（Windows）:
 ```powershell
-$stateFile = "$env:TEMP\claude-pet-status.json"
+$port = if ($env:CLAUDE_POKE_PORT) { $env:CLAUDE_POKE_PORT } else { "9527" }
 $timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 $sessionId = if ($env:CLAUDE_SESSION_ID) { $env:CLAUDE_SESSION_ID } else { "unknown" }
 
+# Handle Notify state with message as nested object
+if ($args[0] -eq "Notify" -and $args[1]) {
+    $stateValue = @{ Notify = $args[1] }
+} else {
+    $stateValue = $args[0]
+}
+
 $json = @{
-    state = $args[0]
+    state = $stateValue
     timestamp = $timestamp
     session_id = $sessionId
     message = $args[1]
 } | ConvertTo-Json
 
-Set-Content -Path $stateFile -Value $json
+try {
+    Invoke-RestMethod -Uri "http://127.0.0.1:${port}/status" `
+        -Method Post -Body $json -ContentType "application/json" `
+        -TimeoutSec 2 -ErrorAction Stop | Out-Null
+} catch {
+    # Daemon not running — silently ignore
+}
 ```
 
 ---
@@ -343,10 +364,9 @@ claude-pet/
 │   │   ├── pet_state.rs         # PetState 定义
 │   │   └── state_machine.rs     # 状态转换逻辑
 │   │
-│   ├── monitor/                 # 状态监听
+│   ├── monitor/                 # 状态接收
 │   │   ├── mod.rs
-│   │   ├── file_watcher.rs      # 文件监听（notify）
-│   │   ├── poller.rs            # 轮询备选方案
+│   │   ├── http_server.rs       # HTTP 服务（tiny_http）
 │   │   └── process_detector.rs  # Claude 进程检测
 │   │
 │   ├── animation/               # 动画系统
@@ -488,83 +508,61 @@ impl StateMachine {
 }
 ```
 
-### 6.3 文件监听实现
+### 6.3 HTTP 状态接收实现
 
 ```rust
-// src/monitor/file_watcher.rs
-use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
-use std::path::PathBuf;
+// src/monitor/http_server.rs
+use crate::state::StatusFile;
+use std::io::Read;
 use std::sync::mpsc;
-use std::time::Duration;
-use tokio::sync::mpsc as tokio_mpsc;
 
-pub struct FileWatcher {
-    watcher: RecommendedWatcher,
-    status_path: PathBuf,
+pub struct HttpServer {
+    _server: tiny_http::Server,
 }
 
-impl FileWatcher {
-    pub fn new(status_path: PathBuf) -> anyhow::Result<Self> {
-        let (tx, rx) = mpsc::channel();
-        let watcher = Watcher::new(tx, Duration::from_millis(100))?;
-        
-        Ok(Self {
-            watcher,
-            status_path,
-        })
-    }
+impl HttpServer {
+    pub fn start(port: u16, tx: mpsc::Sender<StatusFile>) -> anyhow::Result<Self> {
+        let addr = ([127, 0, 0, 1], port).into();
+        let server = tiny_http::Server::http(addr)?;
+        let server_ref = server.clone();
 
-    pub fn start(&mut self, state_tx: tokio_mpsc::Sender<StatusFile>) -> anyhow::Result<()> {
-        self.watcher.watch(
-            self.status_path.parent().unwrap(),
-            RecursiveMode::NonRecursive,
-        )?;
+        std::thread::spawn(move || {
+            for mut request in server_ref.incoming_requests() {
+                if request.method() != &tiny_http::Method::Post
+                    || request.url() != "/status"
+                {
+                    let _ = request.respond(
+                        tiny_http::Response::from_string("Not Found").with_status_code(404)
+                    );
+                    continue;
+                }
 
-        let path = self.status_path.clone();
-        tokio::spawn(async move {
-            // 监听文件变化并解析状态
-            loop {
-                // ... 处理 notify 事件
-                // 解析 JSON
-                // 发送到 state_tx
+                let mut body = String::new();
+                request.as_reader().read_to_string(&mut body).ok();
+
+                if let Ok(status) = StatusFile::from_json(&body) {
+                    let _ = tx.send(status);
+                    let _ = request.respond(tiny_http::Response::empty(204));
+                }
             }
         });
 
-        Ok(())
+        Ok(Self { _server: server })
     }
 }
 ```
 
-### 6.4 跨平台路径处理
+### 6.4 配置管理
 
 ```rust
 // src/config.rs
-use std::path::PathBuf;
+pub const DEFAULT_HTTP_PORT: u16 = 9527;
 
-pub fn get_status_file_path() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    {
-        // Windows: %TEMP%\claude-pet-status.json
-        std::env::temp_dir().join("claude-pet-status.json")
-    }
-    
-    #[cfg(target_os = "macos")]
-    {
-        // macOS: /tmp/claude-pet-status.json
-        PathBuf::from("/tmp/claude-pet-status.json")
-    }
-    
-    #[cfg(target_os = "linux")]
-    {
-        // Linux: /tmp/claude-pet-status.json
-        PathBuf::from("/tmp/claude-pet-status.json")
-    }
-}
-
-pub fn get_config_dir() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("claude-pet")
+pub fn get_http_port() -> u16 {
+    std::env::var("CLAUDE_POKE_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_HTTP_PORT)
 }
 ```
 
@@ -584,10 +582,9 @@ edition = "2021"
 winit = "0.30"
 pixels = "0.14"
 image = { version = "0.25", features = ["png", "gif"] }
-notify = "7.0"
+tiny_http = "0.12"
 tray-icon = "0.19"
 sysinfo = "0.31"
-tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "5"
@@ -637,12 +634,11 @@ jobs:
 
 ## 8. 实现阶段
 
-### Phase 1：状态监听（核心）
+### Phase 1：状态接收（核心）
 - [x] 项目结构搭建
-- [ ] PetState 定义
-- [ ] 状态文件 JSON 格式
-- [ ] 文件监听模块（notify）
-- [ ] 轮询备选方案
+- [x] PetState 定义
+- [x] 状态 JSON 格式
+- [x] HTTP 状态接收模块（tiny_http）
 - [ ] Claude 进程检测
 
 ### Phase 2：渲染框架
@@ -680,11 +676,18 @@ cargo test
 ### 9.2 手动测试状态切换
 
 ```bash
-# Linux/macOS
-echo '{"state":"Working","timestamp":'$(date +%s%3N)',"session_id":"test","message":null}' > /tmp/claude-pet-status.json
+# Linux/macOS — 使用 curl 发送状态
+curl -X POST http://127.0.0.1:9527/status \
+  -H "Content-Type: application/json" \
+  -d '{"state":"Working","timestamp":1717411200000,"session_id":"test","message":null}'
 
 # Windows PowerShell
-echo '{"state":"Working","timestamp":' + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + ',"session_id":"test","message":null}' > $env:TEMP\claude-pet-status.json
+Invoke-RestMethod -Uri "http://127.0.0.1:9527/status" -Method Post \
+  -Body '{"state":"Working","timestamp":1717411200000,"session_id":"test","message":null}' \
+  -ContentType "application/json"
+
+# 或直接运行 hook 脚本
+./hooks/set-status.sh Working
 ```
 
 ### 9.3 集成测试
@@ -697,7 +700,7 @@ echo '{"state":"Working","timestamp":' + [DateTimeOffset]::UtcNow.ToUnixTimeMill
 
 ## 10. 后续扩展
 
-- **ESP32 移植**：抽象状态接口，支持 WiFi/BLE 接收
+- **ESP32 移植**：HTTP daemon 模式可桥接 BLE（btleplug）推送到 ESP 屏幕
 - **多宠物支持**：不同项目显示不同宠物
 - **自定义皮肤**：用户可替换精灵图
 - **声音效果**：玄凤鹦鹉叫声

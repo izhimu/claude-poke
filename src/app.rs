@@ -1,7 +1,7 @@
 use crate::animation::{AnimationMap, FrameManager, SpriteSheet};
 use crate::animation::sprite_sheet::create_placeholder_sprite;
-use crate::config::{get_assets_dir, get_status_file_path, WindowConfig};
-use crate::monitor::{FileWatcher, StatusPoller};
+use crate::config::{get_assets_dir, get_http_port, WindowConfig};
+use crate::monitor::HttpServer;
 #[cfg(target_os = "windows")]
 use crate::render::GdiRenderer;
 #[cfg(not(target_os = "windows"))]
@@ -43,8 +43,8 @@ pub struct App {
     animation_map: AnimationMap,
     config: WindowConfig,
     assets_dir: PathBuf,
-    status_rx: Option<mpsc::Receiver<Option<StatusFile>>>,
-    _file_watcher: Option<FileWatcher>,
+    status_rx: Option<mpsc::Receiver<StatusFile>>,
+    _http_server: Option<HttpServer>,
     last_state: PetState,
     visible: bool,
     /// Channel to send frame data to the Wayland layer surface render thread.
@@ -69,7 +69,7 @@ impl App {
             config: WindowConfig::default(),
             assets_dir: get_assets_dir(),
             status_rx: None,
-            _file_watcher: None,
+            _http_server: None,
             last_state: PetState::Sleeping,
             visible: true,
             #[cfg(target_os = "linux")]
@@ -79,36 +79,14 @@ impl App {
         }
     }
 
-    /// Initialize the file watcher in a background thread.
+    /// Start the HTTP status server.
     pub fn start_monitoring(&mut self) -> Result<()> {
-        let status_path = get_status_file_path();
-        let mut file_watcher = FileWatcher::new(status_path.clone())?;
-        file_watcher.start()?;
-
+        let port = get_http_port();
         let (tx, rx) = mpsc::channel();
-
-        // Spawn a thread that reads from the file watcher and sends to the app
-        std::thread::spawn(move || {
-            let mut poller = StatusPoller::new(status_path.clone(), 100);
-            let mut file_watcher_for_thread = FileWatcher::new(status_path).unwrap();
-            let _ = file_watcher_for_thread.start();
-
-            loop {
-                // Try file watcher first
-                if let Some(status) = file_watcher_for_thread.try_recv_status() {
-                    let _ = tx.send(Some(status));
-                } else {
-                    // Fall back to polling
-                    if let Some(status) = poller.poll() {
-                        let _ = tx.send(Some(status));
-                    }
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-        });
-
+        let server = HttpServer::start(port, tx)?;
+        info!("Status server started — hooks should POST to http://127.0.0.1:{}/status", port);
         self.status_rx = Some(rx);
-        self._file_watcher = Some(file_watcher);
+        self._http_server = Some(server);
         Ok(())
     }
 
@@ -171,7 +149,7 @@ impl App {
         }
     }
 
-    /// Check for status updates from the file watcher.
+    /// Check for status updates from the HTTP server.
     fn check_status_updates(&mut self, _event_loop: &ActiveEventLoop) {
         let rx = match &self.status_rx {
             Some(rx) => rx,
@@ -181,7 +159,7 @@ impl App {
         // Drain all pending updates, keep the latest
         let mut latest = None;
         while let Ok(status) = rx.try_recv() {
-            latest = status;
+            latest = Some(status);
         }
 
         if let Some(status) = latest {
@@ -311,6 +289,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::RedrawRequested => {
                 self.check_status_updates(event_loop);
+                self.state_machine.tick();
                 self.frame_manager.update();
                 self.render_frame();
             }
@@ -337,8 +316,9 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        // Check for status updates
+        // Check for status updates and apply deferred state transitions
         self.check_status_updates(_event_loop);
+        self.state_machine.tick();
         self.frame_manager.update();
 
         #[cfg(target_os = "linux")]

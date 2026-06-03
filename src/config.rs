@@ -1,16 +1,15 @@
 use std::path::PathBuf;
 
-/// Get the path to the status file that Claude Code hooks write to.
-pub fn get_status_file_path() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    {
-        std::env::temp_dir().join("claude-pet-status.json")
-    }
+/// Default HTTP port for the status server.
+pub const DEFAULT_HTTP_PORT: u16 = 9527;
 
-    #[cfg(not(target_os = "windows"))]
-    {
-        PathBuf::from("/tmp/claude-pet-status.json")
-    }
+/// Get the HTTP port for the status server.
+/// Can be overridden via the CLAUDE_POKE_PORT environment variable.
+pub fn get_http_port() -> u16 {
+    std::env::var("CLAUDE_POKE_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_HTTP_PORT)
 }
 
 /// Get the application config directory.

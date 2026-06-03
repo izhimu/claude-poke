@@ -11,7 +11,7 @@ tray = ["dep:tray-icon"]
 winit = "0.30"
 pixels = "0.17"
 image = { version = "0.25", features = ["png"] }
-notify = "8"
+tiny_http = "0.12"
 tray-icon = { version = "0.24", optional = true }
 sysinfo = "0.33"
 serde = { version = "1", features = ["derive"] }

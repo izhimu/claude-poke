@@ -12,7 +12,6 @@ $ProjectDir = Split-Path -Parent $ScriptDir
 # Settings directory (Claude Code on Windows uses ~/.claude, not %APPDATA%\claude)
 $SettingsDir = "$env:USERPROFILE\.claude"
 $HooksDir = "$SettingsDir\hooks"
-$StatusFile = "$env:TEMP\claude-pet-status.json"
 $ScriptName = "set-status.ps1"
 
 # Create hooks directory if it doesn't exist
