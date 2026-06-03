@@ -2,6 +2,9 @@ use crate::animation::{AnimationMap, FrameManager, SpriteSheet};
 use crate::animation::sprite_sheet::create_placeholder_sprite;
 use crate::config::{get_assets_dir, get_status_file_path, WindowConfig};
 use crate::monitor::{FileWatcher, StatusPoller};
+#[cfg(target_os = "windows")]
+use crate::render::GdiRenderer;
+#[cfg(not(target_os = "windows"))]
 use crate::render::PetRenderer;
 use crate::state::{PetState, StateMachine, StatusFile};
 
@@ -24,11 +27,17 @@ pub enum UserEvent {
     TrayQuit,
 }
 
+/// Type alias for the platform-specific renderer.
+#[cfg(target_os = "windows")]
+type Renderer = GdiRenderer;
+#[cfg(not(target_os = "windows"))]
+type Renderer = PetRenderer;
+
 /// The main application state.
 #[allow(dead_code)]
 pub struct App {
     window: Option<Window>,
-    renderer: Option<PetRenderer>,
+    renderer: Option<Renderer>,
     state_machine: StateMachine,
     frame_manager: FrameManager,
     animation_map: AnimationMap,
@@ -238,7 +247,7 @@ impl ApplicationHandler<UserEvent> for App {
                     window.set_outer_position(PhysicalPosition::new(x, y));
                 }
 
-                match PetRenderer::new(&window, &self.config) {
+                match Renderer::new(&window, &self.config) {
                     Ok(renderer) => {
                         self.renderer = Some(renderer);
                         info!("Renderer initialized");
