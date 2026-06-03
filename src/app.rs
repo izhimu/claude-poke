@@ -38,10 +38,19 @@ pub struct App {
     _file_watcher: Option<FileWatcher>,
     last_state: PetState,
     visible: bool,
+    /// Channel to send frame data to the Wayland layer surface render thread.
+    #[cfg(target_os = "linux")]
+    layer_tx: Option<mpsc::Sender<Option<Vec<u8>>>>,
+    /// Whether we're running on Wayland (layer surface mode).
+    #[cfg(target_os = "linux")]
+    is_wayland: bool,
 }
 
 impl App {
     pub fn new() -> Self {
+        #[cfg(target_os = "linux")]
+        let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
+
         Self {
             window: None,
             renderer: None,
@@ -54,6 +63,10 @@ impl App {
             _file_watcher: None,
             last_state: PetState::Sleeping,
             visible: true,
+            #[cfg(target_os = "linux")]
+            layer_tx: None,
+            #[cfg(target_os = "linux")]
+            is_wayland,
         }
     }
 
@@ -90,15 +103,8 @@ impl App {
         Ok(())
     }
 
-    /// Render a single frame using placeholder graphics.
-    fn render_frame(&mut self) {
-        let renderer = match &mut self.renderer {
-            Some(r) => r,
-            None => return,
-        };
-
-        renderer.clear();
-
+    /// Build a single frame as raw RGBA pixel data.
+    fn build_frame(&self) -> Vec<u8> {
         let state = self.state_machine.current().clone();
         let anim_def = self.animation_map.get(&state);
         let frame_idx = self.frame_manager.current_frame();
@@ -111,16 +117,13 @@ impl App {
 
         let sprite_data = if sprite_path.exists() {
             match SpriteSheet::load(&sprite_path, self.config.width, self.config.height) {
-                Ok(sheet) => {
-                    sheet.frame_data(frame_idx)
-                }
+                Ok(sheet) => sheet.frame_data(frame_idx),
                 Err(e) => {
                     warn!("Failed to load sprite {}: {}", sprite_path.display(), e);
                     create_placeholder_sprite(self.config.width, self.config.height, anim_def.color)
                 }
             }
         } else {
-            // Use placeholder with animated brightness based on frame
             let brightness_mod = ((frame_idx as f32 / anim_def.frame_count as f32) * 20.0) as u8;
             let mut color = anim_def.color;
             color[0] = color[0].saturating_add(brightness_mod);
@@ -129,10 +132,33 @@ impl App {
             create_placeholder_sprite(self.config.width, self.config.height, color)
         };
 
+        sprite_data
+    }
+
+    /// Render a single frame using the pixels renderer (X11 path).
+    fn render_frame(&mut self) {
+        // Build frame data first to avoid borrow conflict with renderer
+        let sprite_data = self.build_frame();
+
+        let renderer = match &mut self.renderer {
+            Some(r) => r,
+            None => return,
+        };
+
+        renderer.clear();
         renderer.draw_sprite(&sprite_data, self.config.width, self.config.height, 0, 0);
 
         if let Err(e) = renderer.render() {
             error!("Render error: {}", e);
+        }
+    }
+
+    /// Send frame data to the Wayland layer surface render thread.
+    #[cfg(target_os = "linux")]
+    fn send_frame_to_layer(&mut self) {
+        let sprite_data = self.build_frame();
+        if let Some(ref tx) = self.layer_tx {
+            let _ = tx.send(Some(sprite_data));
         }
     }
 
@@ -164,6 +190,31 @@ impl App {
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "linux")]
+        if self.is_wayland && self.layer_tx.is_none() && self.window.is_none() {
+            // On Wayland: try layer surface renderer for always-on-top
+            if crate::render::wayland_layer::is_layer_shell_available() {
+                match crate::render::wayland_layer::spawn_layer_renderer(&self.config) {
+                    Ok(tx) => {
+                        self.layer_tx = Some(tx);
+                        info!("Wayland layer surface renderer spawned (always-on-top)");
+                        return;
+                    }
+                    Err(e) => {
+                        warn!("Failed to spawn layer renderer: {}", e);
+                    }
+                }
+            } else {
+                info!("Layer shell not available, using regular window");
+            }
+            // Fall through to create a regular winit window
+        }
+
+        #[cfg(target_os = "linux")]
+        if self.layer_tx.is_some() {
+            return;
+        }
+
         if self.window.is_some() {
             return;
         }
@@ -226,6 +277,13 @@ impl ApplicationHandler<UserEvent> for App {
                 info!("Quit requested");
                 self.window = None;
                 self.renderer = None;
+                #[cfg(target_os = "linux")]
+                {
+                    // Signal the layer surface thread to exit
+                    if let Some(tx) = self.layer_tx.take() {
+                        let _ = tx.send(None);
+                    }
+                }
             }
         }
     }
@@ -270,7 +328,18 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        // Request continuous redraws for animation
+        // Check for status updates
+        self.check_status_updates(_event_loop);
+        self.frame_manager.update();
+
+        #[cfg(target_os = "linux")]
+        if self.layer_tx.is_some() {
+            // On Wayland with layer surface: send frame data to render thread
+            self.send_frame_to_layer();
+            return;
+        }
+
+        // On X11 (or Wayland fallback): request redraw for the winit window
         if let Some(window) = &self.window {
             window.request_redraw();
         }
