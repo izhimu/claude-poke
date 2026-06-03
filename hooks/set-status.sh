@@ -12,7 +12,7 @@ STATE="${1:-Sleeping}"
 MESSAGE="${2:-}"
 
 STATE_JSON="\"$STATE\""
-if [ "$STATE" = "Notify" ] && [ -n "$MESSAGE" ]; then
+if [ "$STATE" = "Notify" ]; then
     STATE_JSON="{\"Notify\": \"$MESSAGE\"}"
 fi
 

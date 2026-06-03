@@ -15,7 +15,7 @@ $timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 $sessionId = if ($env:CLAUDE_SESSION_ID) { $env:CLAUDE_SESSION_ID } else { "unknown" }
 
 # Handle Notify state with message as nested object
-if ($State -eq "Notify" -and $Message) {
+if ($State -eq "Notify") {
     $stateValue = @{ Notify = $Message }
 } else {
     $stateValue = $State
