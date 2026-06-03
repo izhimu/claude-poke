@@ -1,4 +1,5 @@
-use log::info;
+#[allow(unused_imports)]
+use log::{info, warn};
 
 /// Check if autostart is enabled for this application.
 #[allow(dead_code)]

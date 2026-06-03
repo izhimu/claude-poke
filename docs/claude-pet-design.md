@@ -95,20 +95,20 @@
 pub enum PetState {
     /// Claude Code 未运行或已关闭
     Sleeping,
-    /// 等待用户输入（UserPromptSubmit）
-    Waiting,
+    /// 会话活跃，等待用户输入（SessionStart / Stop）
+    Idle,
     /// 正在执行工具（PreToolUse）
     Working,
-    /// 思考中（PostToolUse / 处理完成后的短暂状态）
+    /// 思考中（UserPromptSubmit / PostToolUse）
     Thinking,
+    /// 等待用户权限确认（PermissionRequest）
+    PendingApproval,
     /// 收到通知（Notification）
     Notify(String),
-    /// 子代理工作中（SubAgentStart）
+    /// 子代理工作中（SubagentStart）
     SubAgentWorking,
-    /// 出错
+    /// 出错（PostToolUseFailure / StopFailure）
     Error,
-    /// 停止
-    Stopped,
 }
 
 impl Default for PetState {
@@ -281,12 +281,13 @@ Set-Content -Path $stateFile -Value $json
 | 状态 | 动作描述 | 帧数 | 帧率 |
 |------|----------|------|------|
 | **Sleeping** | 站立闭眼，轻微呼吸起伏，头顶冒 ZZZ | 6帧 | 1fps |
-| **Waiting** | 左右转头张望，偶尔眨眼 | 8帧 | 4fps |
+| **Idle** | 左右转头张望，偶尔眨眼 | 8帧 | 4fps |
 | **Working** | 低头快速啄键盘，身上冒汗珠 | 8帧 | 8fps |
 | **Thinking** | 仰头看天，头顶冒问号/灯泡泡泡 | 6帧 | 3fps |
-| **Notify** | 跳跃 + 翅膀扇动，头顶感叹号 | 6帧 | 6fps |
-| **SubAgentWorking** | 两只鸟一起工作 | 8帧 | 6fps |
-| **Error** | 受惊姿态，头顶冒叉号 | 4帧 | 2fps |
+| **PendingApproval** | 犹豫姿态，睁大眼睛，冒冷汗，头顶跳动感叹号 | 6帧 | 2fps |
+| **Notify** | 跳跃 + 翅膀扇动，头顶感叹号，音符和闪光 | 6帧 | 6fps |
+| **SubAgentWorking** | 主鸟与迷你同伴鸟协作，之间有连接线 | 8帧 | 6fps |
+| **Error** | 受惊姿态，头顶冒叉号，炸毛 | 4帧 | 2fps |
 | **Stopped** | 收起翅膀站定，缓缓闭眼 | 4帧 | 2fps |
 
 ### 4.3 动画帧序列示例（Sleeping）
@@ -315,12 +316,15 @@ transparent background, clean pixel edges, chibi proportions
 
 | 状态 | 追加提示词 |
 |------|-----------|
-| Sleeping | `sleeping peacefully with eyes closed, tiny ZZZ floating above, gentle breathing pose` |
-| Waiting | `looking left and right curiously, crest raised alertly, friendly expression` |
-| Working | `pecking at a tiny keyboard intensely, sweat drops, focused determined face` |
-| Thinking | `looking up at sky with thought bubble, one foot raised, contemplative pose` |
-| Notify | `jumping excitedly with wings spread, exclamation mark above head, happy squawk` |
-| Error | `startled pose with feathers puffed, X marks above head, worried expression` |
+| Sleeping | `sleeping peacefully with eyes closed, tiny ZZZ floating above head in soft blue, gentle breathing pose with body slightly bobbing, relaxed crest feathers laying flat` |
+| Idle | `looking left and right curiously with head tilting, crest raised alertly, friendly expression with occasional blink, standing upright on perch, gentle swaying` |
+| Working | `pecking at a tiny keyboard intensely, sweat drops on forehead, focused determined face with narrowed eyes, rapid typing motion, small sparkles around beak` |
+| Thinking | `looking up at sky with thought bubble containing question marks and lightbulb, one foot slightly raised, contemplative pose with tilted head, crest feathers curling thoughtfully` |
+| PendingApproval | `frozen in hesitant pose with wide worried eyes and raised eyebrows, bouncing exclamation mark above head, single sweat drop on cheek, wings slightly tucked nervously, body leaning away slightly as if unsure whether to proceed` |
+| Notify | `jumping excitedly with wings spread wide, exclamation mark above head glowing bright, happy squawk with open beak, musical notes and sparkles floating around, crest feathers fully extended upward` |
+| SubAgentWorking | `two cockatiels working together side by side, main bird pointing with wing at tiny screen while smaller companion bird nods, a glowing connection line between them like a data link, sparkles and small gear icons around both, the companion is a miniature version with slightly different crest color, collaborative energetic pose` |
+| Error | `startled pose with feathers all puffed out, X marks above head in red, worried shaking expression with eyes wide open, small lightning bolt sparks around body, crest feathers standing straight up in shock` |
+| Stopped | `standing still with wings folded close to body, eyes slowly closing in calm acceptance, crest feathers gently drooping downward, body slightly smaller and settled, peaceful wind-down pose with a small sigh effect, fading energy particles` |
 
 ---
 
@@ -365,10 +369,12 @@ claude-pet/
 ├── assets/
 │   ├── sprites/                 # 精灵图
 │   │   ├── sleeping.png         # Sprite sheet
-│   │   ├── waiting.png
+│   │   ├── waiting.png          # (对应 Idle 状态)
 │   │   ├── working.png
 │   │   ├── thinking.png
+│   │   ├── pending_approval.png # (对应 PendingApproval 状态)
 │   │   ├── notify.png
+│   │   ├── subagent.png         # (对应 SubAgentWorking 状态)
 │   │   ├── error.png
 │   │   └── stopped.png
 │   ├── icon/
@@ -403,13 +409,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PetState {
     Sleeping,
-    Waiting,
+    Idle,
     Working,
     Thinking,
+    PendingApproval,
     Notify(String),
     SubAgentWorking,
     Error,
-    Stopped,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -457,14 +463,14 @@ impl StateMachine {
         
         // 状态优先级：高优先级状态不会被低优先级覆盖
         let priority = |s: &PetState| match s {
-            PetState::Error => 5,
-            PetState::Notify(_) => 4,
+            PetState::Error => 6,
+            PetState::Notify(_) => 5,
+            PetState::PendingApproval => 4,
             PetState::SubAgentWorking => 3,
             PetState::Working => 2,
             PetState::Thinking => 1,
-            PetState::Waiting => 0,
+            PetState::Idle => 0,
             PetState::Sleeping => 0,
-            PetState::Stopped => 0,
         };
         
         if priority(&new_state) >= priority(&self.current) {

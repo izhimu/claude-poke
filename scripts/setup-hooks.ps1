@@ -9,8 +9,8 @@ Write-Host ""
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectDir = Split-Path -Parent $ScriptDir
 
-# Settings directory
-$SettingsDir = "$env:APPDATA\claude"
+# Settings directory (Claude Code on Windows uses ~/.claude, not %APPDATA%\claude)
+$SettingsDir = "$env:USERPROFILE\.claude"
 $HooksDir = "$SettingsDir\hooks"
 $StatusFile = "$env:TEMP\claude-pet-status.json"
 $ScriptName = "set-status.ps1"
@@ -46,12 +46,14 @@ Write-Host "⚙️  Updating settings.json with hooks configuration"
 $settings = Get-Content $SettingsFile -Raw | ConvertFrom-Json
 
 # Define the hooks configuration
+# Each hook uses shell="powershell" so Claude Code runs .ps1 scripts via PowerShell
 $hooks = @{
     SessionStart = @(
         @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath Idle"
                 }
             )
@@ -62,6 +64,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath Sleeping"
                 }
             )
@@ -72,6 +75,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath Thinking"
                 }
             )
@@ -83,6 +87,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath Working"
                 }
             )
@@ -93,6 +98,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath PendingApproval"
                 }
             )
@@ -104,6 +110,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath Thinking"
                 }
             )
@@ -115,6 +122,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath Error"
                 }
             )
@@ -125,6 +133,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath Notify"
                 }
             )
@@ -135,6 +144,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath SubAgentWorking"
                 }
             )
@@ -145,6 +155,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath Thinking"
                 }
             )
@@ -155,6 +166,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath Idle"
                 }
             )
@@ -165,6 +177,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath Error"
                 }
             )
@@ -175,6 +188,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath Working"
                 }
             )
@@ -185,6 +199,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath Thinking"
                 }
             )
@@ -195,6 +210,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath Thinking"
                 }
             )
@@ -205,6 +221,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath Idle"
                 }
             )
@@ -215,6 +232,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath Error"
                 }
             )
@@ -225,6 +243,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath Thinking"
                 }
             )
@@ -235,6 +254,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath Thinking"
                 }
             )
@@ -245,6 +265,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath Idle"
                 }
             )
@@ -255,6 +276,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath Idle"
                 }
             )
@@ -265,6 +287,7 @@ $hooks = @{
             hooks = @(
                 @{
                     type = "command"
+                    shell = "powershell"
                     command = "$HookScriptPath Idle"
                 }
             )
