@@ -3,10 +3,6 @@ use winit::dpi::PhysicalPosition;
 /// Tracks window drag state for moving the pet around the screen.
 pub struct DragState {
     dragging: bool,
-    /// Cursor position in window coords at the moment of mouse press
-    drag_start: PhysicalPosition<f64>,
-    /// Window position in screen coords at the moment of mouse press
-    window_start: PhysicalPosition<i32>,
     /// Last known cursor position (updated on every CursorMoved)
     last_cursor: PhysicalPosition<f64>,
 }
@@ -15,18 +11,13 @@ impl DragState {
     pub fn new() -> Self {
         Self {
             dragging: false,
-            drag_start: PhysicalPosition::new(0.0, 0.0),
-            window_start: PhysicalPosition::new(0, 0),
             last_cursor: PhysicalPosition::new(0.0, 0.0),
         }
     }
 
     /// Start a drag. Call this on MouseInput Pressed.
-    /// `window_pos`: current outer position of the window.
-    pub fn start_drag(&mut self, window_pos: PhysicalPosition<i32>) {
+    pub fn start_drag(&mut self) {
         self.dragging = true;
-        self.drag_start = self.last_cursor;
-        self.window_start = window_pos;
     }
 
     /// End a drag. Call this on MouseInput Released.
@@ -34,24 +25,26 @@ impl DragState {
         self.dragging = false;
     }
 
-    /// If dragging, compute the new window position based on cursor movement.
-    /// `cursor_pos`: cursor position in window coords.
+    /// Update cursor tracking. Always call this on CursorMoved.
+    /// If dragging, returns the new window position (delta-based).
     pub fn on_cursor_moved(
         &mut self,
         cursor_pos: PhysicalPosition<f64>,
+        current_window_pos: PhysicalPosition<i32>,
     ) -> Option<PhysicalPosition<i32>> {
+        let delta_x = cursor_pos.x - self.last_cursor.x;
+        let delta_y = cursor_pos.y - self.last_cursor.y;
+
+        // Always update last_cursor so it's accurate when drag starts
         self.last_cursor = cursor_pos;
 
         if !self.dragging {
             return None;
         }
 
-        let dx = cursor_pos.x - self.drag_start.x;
-        let dy = cursor_pos.y - self.drag_start.y;
-
         Some(PhysicalPosition::new(
-            (self.window_start.x as f64 + dx) as i32,
-            (self.window_start.y as f64 + dy) as i32,
+            current_window_pos.x + delta_x as i32,
+            current_window_pos.y + delta_y as i32,
         ))
     }
 

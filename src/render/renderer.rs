@@ -1,6 +1,7 @@
 use crate::config::WindowConfig;
 use anyhow::Result;
-use pixels::{Pixels, SurfaceTexture};
+use log::debug;
+use pixels::{Pixels, PixelsBuilder, SurfaceTexture};
 use winit::window::Window;
 
 /// The pixel renderer that manages the pixel buffer and rendering.
@@ -27,7 +28,22 @@ impl PetRenderer {
         let surface_texture =
             SurfaceTexture::new(window_size.width, window_size.height, window_ref);
 
-        let pixels = Pixels::new(logical_w, logical_h, surface_texture)?;
+        // Use PixelsBuilder to configure transparency support:
+        // - clear_color with alpha=0 so the background is transparent
+        // - alpha_mode PostMultiplied for proper compositing with the window
+        let pixels = PixelsBuilder::new(logical_w, logical_h, surface_texture)
+            .clear_color(pixels::wgpu::Color {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.0,
+            })
+            .build()?;
+        debug!(
+            "Surface format: {:?}, alpha mode: {:?}",
+            pixels.surface_texture_format(),
+            pixels.context().surface_capabilities.alpha_modes
+        );
 
         Ok(Self {
             pixels,

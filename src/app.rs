@@ -2,7 +2,7 @@ use crate::animation::{AnimationMap, FrameManager, SpriteSheet};
 use crate::animation::sprite_sheet::create_placeholder_sprite;
 use crate::config::{get_assets_dir, get_status_file_path, WindowConfig};
 use crate::monitor::{FileWatcher, StatusPoller};
-use crate::render::{DragState, PetRenderer};
+use crate::render::PetRenderer;
 use crate::state::{PetState, StateMachine, StatusFile};
 
 use anyhow::Result;
@@ -32,7 +32,6 @@ pub struct App {
     state_machine: StateMachine,
     frame_manager: FrameManager,
     animation_map: AnimationMap,
-    drag_state: DragState,
     config: WindowConfig,
     assets_dir: PathBuf,
     status_rx: Option<mpsc::Receiver<Option<StatusFile>>>,
@@ -49,7 +48,6 @@ impl App {
             state_machine: StateMachine::new(),
             frame_manager: FrameManager::new(6, 1.0),
             animation_map: AnimationMap::new(),
-            drag_state: DragState::new(),
             config: WindowConfig::default(),
             assets_dir: get_assets_dir(),
             status_rx: None,
@@ -250,26 +248,13 @@ impl ApplicationHandler<UserEvent> for App {
                 self.render_frame();
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if button == MouseButton::Left {
-                    match state {
-                        ElementState::Pressed => {
-                            if let Some(window) = &self.window {
-                                let window_pos = window
-                                    .outer_position()
-                                    .unwrap_or(PhysicalPosition::new(0, 0));
-                                self.drag_state.start_drag(window_pos);
-                            }
-                        }
-                        ElementState::Released => {
-                            self.drag_state.end_drag();
-                        }
-                    }
-                }
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                if let Some(new_pos) = self.drag_state.on_cursor_moved(position) {
+                if button == MouseButton::Left && state == ElementState::Pressed {
+                    // Use the OS/WM native drag protocol.
+                    // Works on both X11 (_NET_WM_MOVERESIZE) and Wayland (xdg_toplevel_move).
                     if let Some(window) = &self.window {
-                        window.set_outer_position(new_pos);
+                        if let Err(e) = window.drag_window() {
+                            debug!("drag_window failed: {}", e);
+                        }
                     }
                 }
             }
