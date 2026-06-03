@@ -59,7 +59,7 @@ impl Default for WindowConfig {
         Self {
             width: 64,
             height: 64,
-            scale: 6,
+            scale: 3,
             always_on_top: true,
         }
     }

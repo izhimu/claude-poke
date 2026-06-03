@@ -30,7 +30,7 @@ impl PetRenderer {
 
         // Use PixelsBuilder to configure transparency support:
         // - clear_color with alpha=0 so the background is transparent
-        // - alpha_mode PostMultiplied for proper compositing with the window
+        // - alpha_mode PreMultiplied for proper transparent compositing
         let pixels = PixelsBuilder::new(logical_w, logical_h, surface_texture)
             .clear_color(pixels::wgpu::Color {
                 r: 0.0,
@@ -38,9 +38,10 @@ impl PetRenderer {
                 b: 0.0,
                 a: 0.0,
             })
+            .alpha_mode(pixels::wgpu::CompositeAlphaMode::PreMultiplied)
             .build()?;
         debug!(
-            "Surface format: {:?}, alpha mode: {:?}",
+            "Surface format: {:?}, alpha modes: {:?}",
             pixels.surface_texture_format(),
             pixels.context().surface_capabilities.alpha_modes
         );
@@ -122,18 +123,19 @@ impl PetRenderer {
                 if src_idx + 3 < sprite_data.len() && dst_idx + 3 < frame.len() {
                     let a = sprite_data[src_idx + 3] as f32 / 255.0;
                     if a > 0.0 {
-                        // Alpha blending
+                        // Pre-multiplied alpha blending:
+                        // src is straight alpha from sprite, convert to pre-multiplied
+                        let inv_a = 1.0 - a;
                         frame[dst_idx] =
-                            (sprite_data[src_idx] as f32 * a + frame[dst_idx] as f32 * (1.0 - a))
-                                as u8;
-                        frame[dst_idx + 1] = (sprite_data[src_idx + 1] as f32 * a
-                            + frame[dst_idx + 1] as f32 * (1.0 - a))
-                            as u8;
-                        frame[dst_idx + 2] = (sprite_data[src_idx + 2] as f32 * a
-                            + frame[dst_idx + 2] as f32 * (1.0 - a))
-                            as u8;
+                            (sprite_data[src_idx] as f32 * a + frame[dst_idx] as f32 * inv_a) as u8;
+                        frame[dst_idx + 1] =
+                            (sprite_data[src_idx + 1] as f32 * a
+                                + frame[dst_idx + 1] as f32 * inv_a) as u8;
+                        frame[dst_idx + 2] =
+                            (sprite_data[src_idx + 2] as f32 * a
+                                + frame[dst_idx + 2] as f32 * inv_a) as u8;
                         frame[dst_idx + 3] =
-                            (a * 255.0).max(frame[dst_idx + 3] as f32) as u8;
+                            (a * 255.0 + frame[dst_idx + 3] as f32 * inv_a) as u8;
                     }
                 }
             }
