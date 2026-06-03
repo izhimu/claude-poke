@@ -3,22 +3,22 @@ use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PetState {
-    /// Claude Code 未运行或已关闭
+    /// Claude Code 会话未激活（SessionEnd）
     Sleeping,
-    /// 等待用户输入（UserPromptSubmit）
-    Waiting,
+    /// 会话激活，等待用户输入（SessionStart / Stop）
+    Idle,
+    /// Claude 正在思考/处理（UserPromptSubmit / PostToolUse / SubagentStop）
+    Thinking,
     /// 正在执行工具（PreToolUse）
     Working,
-    /// 思考中（PostToolUse / 处理完成后的短暂状态）
-    Thinking,
+    /// 等待用户确认权限（PermissionRequest）
+    PendingApproval,
     /// 收到通知（Notification）
     Notify(String),
-    /// 子代理工作中（SubAgentStart）
+    /// 子代理工作中（SubagentStart）
     SubAgentWorking,
-    /// 出错
+    /// 工具执行失败或 API 错误（PostToolUseFailure / StopFailure）
     Error,
-    /// 停止
-    Stopped,
 }
 
 impl Default for PetState {
@@ -31,13 +31,13 @@ impl fmt::Display for PetState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PetState::Sleeping => write!(f, "Sleeping"),
-            PetState::Waiting => write!(f, "Waiting"),
-            PetState::Working => write!(f, "Working"),
+            PetState::Idle => write!(f, "Idle"),
             PetState::Thinking => write!(f, "Thinking"),
+            PetState::Working => write!(f, "Working"),
+            PetState::PendingApproval => write!(f, "PendingApproval"),
             PetState::Notify(msg) => write!(f, "Notify: {}", msg),
             PetState::SubAgentWorking => write!(f, "SubAgentWorking"),
             PetState::Error => write!(f, "Error"),
-            PetState::Stopped => write!(f, "Stopped"),
         }
     }
 }
@@ -84,6 +84,27 @@ mod tests {
     }
 
     #[test]
+    fn test_status_file_parse_idle() {
+        let json = r#"{"state":"Idle","timestamp":1717411200000,"session_id":"test","message":null}"#;
+        let status = StatusFile::from_json(json).unwrap();
+        assert_eq!(status.state, PetState::Idle);
+    }
+
+    #[test]
+    fn test_status_file_parse_thinking() {
+        let json = r#"{"state":"Thinking","timestamp":1717411200000,"session_id":"test","message":null}"#;
+        let status = StatusFile::from_json(json).unwrap();
+        assert_eq!(status.state, PetState::Thinking);
+    }
+
+    #[test]
+    fn test_status_file_parse_pending_approval() {
+        let json = r#"{"state":"PendingApproval","timestamp":1717411200000,"session_id":"test","message":null}"#;
+        let status = StatusFile::from_json(json).unwrap();
+        assert_eq!(status.state, PetState::PendingApproval);
+    }
+
+    #[test]
     fn test_status_file_parse_notify() {
         let json = r#"{"state":{"Notify":"Hello"},"timestamp":1717411200000,"session_id":"test","message":"Hello"}"#;
         let status = StatusFile::from_json(json).unwrap();
@@ -105,7 +126,10 @@ mod tests {
     #[test]
     fn test_pet_state_display() {
         assert_eq!(PetState::Sleeping.to_string(), "Sleeping");
+        assert_eq!(PetState::Idle.to_string(), "Idle");
+        assert_eq!(PetState::Thinking.to_string(), "Thinking");
         assert_eq!(PetState::Working.to_string(), "Working");
+        assert_eq!(PetState::PendingApproval.to_string(), "PendingApproval");
         assert_eq!(
             PetState::Notify("test".to_string()).to_string(),
             "Notify: test"

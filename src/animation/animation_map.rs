@@ -30,12 +30,21 @@ impl AnimationMap {
             },
         );
         animations.insert(
-            "Waiting".to_string(),
+            "Idle".to_string(),
             AnimationDef {
                 sprite_name: "waiting".to_string(),
                 frame_count: 8,
                 fps: 4.0,
                 color: [100, 200, 100, 255], // green
+            },
+        );
+        animations.insert(
+            "Thinking".to_string(),
+            AnimationDef {
+                sprite_name: "thinking".to_string(),
+                frame_count: 6,
+                fps: 3.0,
+                color: [150, 100, 200, 255], // purple
             },
         );
         animations.insert(
@@ -48,12 +57,12 @@ impl AnimationMap {
             },
         );
         animations.insert(
-            "Thinking".to_string(),
+            "PendingApproval".to_string(),
             AnimationDef {
-                sprite_name: "thinking".to_string(),
+                sprite_name: "pending_approval".to_string(),
                 frame_count: 6,
-                fps: 3.0,
-                color: [150, 100, 200, 255], // purple
+                fps: 2.0,
+                color: [200, 200, 100, 255], // yellow-orange
             },
         );
         animations.insert(
@@ -83,15 +92,6 @@ impl AnimationMap {
                 color: [200, 50, 50, 255], // red
             },
         );
-        animations.insert(
-            "Stopped".to_string(),
-            AnimationDef {
-                sprite_name: "stopped".to_string(),
-                frame_count: 4,
-                fps: 2.0,
-                color: [128, 128, 128, 255], // gray
-            },
-        );
 
         Self { animations }
     }
@@ -100,13 +100,13 @@ impl AnimationMap {
     pub fn get(&self, state: &PetState) -> AnimationDef {
         let key = match state {
             PetState::Sleeping => "Sleeping",
-            PetState::Waiting => "Waiting",
-            PetState::Working => "Working",
+            PetState::Idle => "Idle",
             PetState::Thinking => "Thinking",
+            PetState::Working => "Working",
+            PetState::PendingApproval => "PendingApproval",
             PetState::Notify(_) => "Notify",
             PetState::SubAgentWorking => "SubAgentWorking",
             PetState::Error => "Error",
-            PetState::Stopped => "Stopped",
         };
 
         self.animations

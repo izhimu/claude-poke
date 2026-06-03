@@ -25,4 +25,5 @@ $json = @{
     message = $Message
 } | ConvertTo-Json
 
-Set-Content -Path $stateFile -Value $json
+Set-Content -Path "$stateFile.tmp" -Value $json
+Move-Item -Path "$stateFile.tmp" -Destination $stateFile -Force

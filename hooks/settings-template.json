@@ -1,11 +1,31 @@
 {
     "hooks": {
+        "SessionStart": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Idle"
+                    }
+                ]
+            }
+        ],
+        "SessionEnd": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Sleeping"
+                    }
+                ]
+            }
+        ],
         "UserPromptSubmit": [
             {
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "/path/to/set-status.sh Waiting"
+                        "command": "/path/to/set-status.sh Thinking"
                     }
                 ]
             }
@@ -21,6 +41,16 @@
                 ]
             }
         ],
+        "PermissionRequest": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh PendingApproval"
+                    }
+                ]
+            }
+        ],
         "PostToolUse": [
             {
                 "matcher": ".*",
@@ -28,6 +58,17 @@
                     {
                         "type": "command",
                         "command": "/path/to/set-status.sh Thinking"
+                    }
+                ]
+            }
+        ],
+        "PostToolUseFailure": [
+            {
+                "matcher": ".*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Error"
                     }
                 ]
             }
@@ -42,22 +83,142 @@
                 ]
             }
         ],
-        "Stop": [
-            {
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "/path/to/set-status.sh Stopped"
-                    }
-                ]
-            }
-        ],
-        "SubAgentStart": [
+        "SubagentStart": [
             {
                 "hooks": [
                     {
                         "type": "command",
                         "command": "/path/to/set-status.sh SubAgentWorking"
+                    }
+                ]
+            }
+        ],
+        "SubagentStop": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Thinking"
+                    }
+                ]
+            }
+        ],
+        "Stop": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Idle"
+                    }
+                ]
+            }
+        ],
+        "StopFailure": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Error"
+                    }
+                ]
+            }
+        ],
+        "TaskCreated": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Working"
+                    }
+                ]
+            }
+        ],
+        "TaskCompleted": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Thinking"
+                    }
+                ]
+            }
+        ],
+        "PreCompact": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Thinking"
+                    }
+                ]
+            }
+        ],
+        "PostCompact": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Idle"
+                    }
+                ]
+            }
+        ],
+        "PermissionDenied": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Error"
+                    }
+                ]
+            }
+        ],
+        "PostToolBatch": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Thinking"
+                    }
+                ]
+            }
+        ],
+        "UserPromptExpansion": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Thinking"
+                    }
+                ]
+            }
+        ],
+        "TeammateIdle": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Idle"
+                    }
+                ]
+            }
+        ],
+        "FileChanged": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Idle"
+                    }
+                ]
+            }
+        ],
+        "CwdChanged": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Idle"
                     }
                 ]
             }

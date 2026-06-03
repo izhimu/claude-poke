@@ -9,11 +9,18 @@ SESSION_ID="${CLAUDE_SESSION_ID:-unknown}"
 STATE="${1:-Sleeping}"
 MESSAGE="${2:-}"
 
-cat > "$STATE_FILE" << EOF
+STATE_JSON="\"$STATE\""
+if [ "$STATE" = "Notify" ] && [ -n "$MESSAGE" ]; then
+    STATE_JSON="{\"Notify\": \"$MESSAGE\"}"
+fi
+
+cat > "$STATE_FILE.tmp" << EOF
 {
-    "state": "$STATE",
+    "state": $STATE_JSON,
     "timestamp": $TIMESTAMP,
     "session_id": "$SESSION_ID",
     "message": "$MESSAGE"
 }
 EOF
+
+mv -f "$STATE_FILE.tmp" "$STATE_FILE"

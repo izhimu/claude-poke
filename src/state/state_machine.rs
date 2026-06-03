@@ -22,14 +22,14 @@ impl StateMachine {
         }
 
         let priority = |s: &PetState| match s {
-            PetState::Error => 5,
-            PetState::Notify(_) => 4,
+            PetState::Error => 6,
+            PetState::Notify(_) => 5,
+            PetState::PendingApproval => 4,
             PetState::SubAgentWorking => 3,
             PetState::Working => 2,
             PetState::Thinking => 1,
-            PetState::Waiting => 0,
+            PetState::Idle => 0,
             PetState::Sleeping => 0,
-            PetState::Stopped => 0,
         };
 
         if priority(&new_state) >= priority(&self.current) {
@@ -86,14 +86,14 @@ mod tests {
     fn test_higher_priority_overrides() {
         let mut sm = StateMachine::new();
         sm.transition(PetState::Working); // priority 2
-        assert!(sm.transition(PetState::Error)); // priority 5
+        assert!(sm.transition(PetState::Error)); // priority 6
         assert_eq!(*sm.current(), PetState::Error);
     }
 
     #[test]
     fn test_lower_priority_rejected() {
         let mut sm = StateMachine::new();
-        sm.transition(PetState::Error); // priority 5
+        sm.transition(PetState::Error); // priority 6
         assert!(!sm.transition(PetState::Working)); // priority 2
         assert_eq!(*sm.current(), PetState::Error);
     }
@@ -112,5 +112,53 @@ mod tests {
         sm.transition(PetState::Working);
         assert!(sm.transition(PetState::Notify("test".to_string())));
         assert_eq!(*sm.current(), PetState::Notify("test".to_string()));
+    }
+
+    #[test]
+    fn test_idle_transition() {
+        let mut sm = StateMachine::new();
+        assert!(sm.transition(PetState::Idle));
+        assert_eq!(*sm.current(), PetState::Idle);
+    }
+
+    #[test]
+    fn test_working_overrides_idle() {
+        let mut sm = StateMachine::new();
+        sm.transition(PetState::Idle); // priority 0
+        assert!(sm.transition(PetState::Working)); // priority 2
+        assert_eq!(*sm.current(), PetState::Working);
+    }
+
+    #[test]
+    fn test_thinking_transition() {
+        let mut sm = StateMachine::new();
+        sm.transition(PetState::Idle);
+        assert!(sm.transition(PetState::Thinking)); // priority 1
+        assert_eq!(*sm.current(), PetState::Thinking);
+    }
+
+    #[test]
+    fn test_working_overrides_thinking() {
+        let mut sm = StateMachine::new();
+        sm.transition(PetState::Thinking); // priority 1
+        assert!(sm.transition(PetState::Working)); // priority 2
+        assert_eq!(*sm.current(), PetState::Working);
+    }
+
+    #[test]
+    fn test_pending_approval_overrides_working() {
+        let mut sm = StateMachine::new();
+        sm.transition(PetState::Working); // priority 2
+        assert!(sm.transition(PetState::PendingApproval)); // priority 4
+        assert_eq!(*sm.current(), PetState::PendingApproval);
+    }
+
+    #[test]
+    fn test_thinking_overrides_pending_approval() {
+        let mut sm = StateMachine::new();
+        sm.transition(PetState::PendingApproval); // priority 4
+        // Thinking (priority 1) should NOT override PendingApproval (priority 4)
+        assert!(!sm.transition(PetState::Thinking));
+        assert_eq!(*sm.current(), PetState::PendingApproval);
     }
 }
