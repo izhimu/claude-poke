@@ -1,0 +1,66 @@
+{
+    "hooks": {
+        "UserPromptSubmit": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Waiting"
+                    }
+                ]
+            }
+        ],
+        "PreToolUse": [
+            {
+                "matcher": ".*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Working"
+                    }
+                ]
+            }
+        ],
+        "PostToolUse": [
+            {
+                "matcher": ".*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Thinking"
+                    }
+                ]
+            }
+        ],
+        "Notification": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Notify \"$MESSAGE\""
+                    }
+                ]
+            }
+        ],
+        "Stop": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Stopped"
+                    }
+                ]
+            }
+        ],
+        "SubAgentStart": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh SubAgentWorking"
+                    }
+                ]
+            }
+        ]
+    }
+}
