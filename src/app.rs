@@ -348,6 +348,22 @@ impl ApplicationHandler<UserEvent> for App {
 
 /// Run the application.
 pub fn run() -> Result<()> {
+    // On Wayland: try layer-shell first, fall back to XWayland for always-on-top
+    #[cfg(target_os = "linux")]
+    if std::env::var("WAYLAND_DISPLAY").is_ok() {
+        if crate::render::wayland_layer::is_layer_shell_available() {
+            info!("Layer shell available, using native Wayland");
+        } else if std::env::var("DISPLAY").is_ok() {
+            // GNOME doesn't support layer-shell, but supports XWayland.
+            // Unset WAYLAND_DISPLAY to force winit to use X11, where
+            // WindowLevel::AlwaysOnTop works via _NET_WM_STATE_ABOVE.
+            info!("Layer shell not available, falling back to XWayland for always-on-top");
+            std::env::remove_var("WAYLAND_DISPLAY");
+        } else {
+            warn!("No layer shell and no XWayland (DISPLAY), always-on-top will not work");
+        }
+    }
+
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
 
     let mut app = App::new();
