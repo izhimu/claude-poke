@@ -396,11 +396,6 @@ impl ApplicationHandler<UserEvent> for App {
                     _ => {}
                 }
             }
-
-            // Pump the GLib main context so that libappindicator can serve
-            // D-Bus property reads from the desktop shell (StatusNotifierItem).
-            #[cfg(target_os = "linux")]
-            while gtk::glib::MainContext::default().iteration(false) {}
         }
 
         // Sleep until the next animation frame is due, avoiding busy-wait.
