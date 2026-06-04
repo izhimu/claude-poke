@@ -15,7 +15,7 @@ use std::sync::mpsc;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 /// User events for the event loop (from tray, etc.)
@@ -315,11 +315,15 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // Check for status updates and apply deferred state transitions
-        self.check_status_updates(_event_loop);
+        self.check_status_updates(event_loop);
         self.state_machine.tick();
         self.frame_manager.update();
+
+        // Sleep until the next animation frame is due, avoiding busy-wait.
+        let next_frame = self.frame_manager.next_frame_deadline();
+        event_loop.set_control_flow(ControlFlow::WaitUntil(next_frame));
 
         #[cfg(target_os = "linux")]
         if self.layer_tx.is_some() {

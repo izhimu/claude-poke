@@ -48,6 +48,11 @@ impl FrameManager {
         self.current_frame
     }
 
+    /// Returns the Instant when the next frame should be rendered.
+    pub fn next_frame_deadline(&self) -> Instant {
+        self.last_frame_time + self.frame_duration
+    }
+
     /// Reset to frame 0.
     #[allow(dead_code)]
     pub fn reset(&mut self) {
