@@ -48,6 +48,11 @@ impl FrameManager {
         self.current_frame
     }
 
+    /// Get the current frame count.
+    pub fn frame_count(&self) -> u32 {
+        self.frame_count
+    }
+
     /// Returns the Instant when the next frame should be rendered.
     pub fn next_frame_deadline(&self) -> Instant {
         self.last_frame_time + self.frame_duration

@@ -1,6 +1,6 @@
-#![cfg(feature = "tray")]
+#![cfg(all(feature = "tray", target_os = "linux"))]
 
-use std::sync::mpsc;
+use std::sync::{mpsc, LazyLock};
 
 use ksni::blocking::TrayMethods;
 use ksni::menu::*;
@@ -9,6 +9,9 @@ use ksni::menu::*;
 pub const MENU_SHOW_HIDE: &str = "show_hide";
 pub const MENU_ALWAYS_ON_TOP: &str = "always_on_top";
 pub const MENU_QUIT: &str = "quit";
+
+/// Cached 16x16 ARGB32 icon (gold circle). Computed once, reused on every property check.
+static DEFAULT_ICON: LazyLock<ksni::Icon> = LazyLock::new(create_default_icon);
 
 /// Tray state that implements `ksni::Tray`.
 /// Menu callbacks send event IDs through the channel to the main thread.
@@ -29,11 +32,15 @@ impl ksni::Tray for TrayState {
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        vec![create_default_icon()]
+        vec![DEFAULT_ICON.clone()]
     }
 
     fn status(&self) -> ksni::Status {
         ksni::Status::Active
+    }
+
+    fn activate(&mut self, _x: i32, _y: i32) {
+        let _ = self.tx.send(MENU_SHOW_HIDE.into());
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
@@ -96,16 +103,20 @@ impl SystemTray {
 
     /// Update the show/hide menu item label based on visibility.
     pub fn set_visibility_label(&self, visible: bool) {
-        self.handle.update(move |state| {
+        if self.handle.update(move |state| {
             state.visible = visible;
-        });
+        }).is_none() {
+            log::warn!("Tray service unavailable, menu state not updated");
+        }
     }
 
     /// Sync the "置顶" checkmark state.
     pub fn set_always_on_top(&self, on: bool) {
-        self.handle.update(move |state| {
+        if self.handle.update(move |state| {
             state.always_on_top = on;
-        });
+        }).is_none() {
+            log::warn!("Tray service unavailable, menu state not updated");
+        }
     }
 
     /// Check for menu events. Returns the menu item ID string if something was clicked.
@@ -115,6 +126,7 @@ impl SystemTray {
 }
 
 /// Create a default 16x16 ARGB32 icon (gold circle).
+/// ARGB32 in network byte order: [A, R, G, B] per pixel.
 fn create_default_icon() -> ksni::Icon {
     let size = 16usize;
     let mut data = vec![0u8; size * size * 4];
@@ -124,17 +136,13 @@ fn create_default_icon() -> ksni::Icon {
             let dx = (x as f64 - 7.5).powi(2);
             let dy = (y as f64 - 7.5).powi(2);
             if dx + dy < 49.0 {
-                // RGBA: R=255, G=215, B=0, A=255
-                data[idx] = 255;
-                data[idx + 1] = 215;
-                data[idx + 2] = 0;
-                data[idx + 3] = 255;
+                // ARGB32 network byte order: [A, R, G, B]
+                data[idx] = 255;     // A
+                data[idx + 1] = 255; // R
+                data[idx + 2] = 215; // G
+                data[idx + 3] = 0;   // B
             }
         }
-    }
-    // Convert RGBA → ARGB (rotate right by 1)
-    for pixel in data.chunks_exact_mut(4) {
-        pixel.rotate_right(1);
     }
     ksni::Icon {
         width: size as i32,

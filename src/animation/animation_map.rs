@@ -5,7 +5,6 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub struct AnimationDef {
     pub sprite_name: String,
-    pub frame_count: u32,
     pub fps: f32,
     pub color: [u8; 4], // placeholder color when no sprite sheet
 }
@@ -19,12 +18,11 @@ impl AnimationMap {
     pub fn new() -> Self {
         let mut animations = HashMap::new();
 
-        // Default animation definitions matching the design doc
+        // Default animation definitions — frame_count is auto-detected from the sprite sheet
         animations.insert(
             "Sleeping".to_string(),
             AnimationDef {
                 sprite_name: "sleeping".to_string(),
-                frame_count: 6,
                 fps: 1.0,
                 color: [100, 100, 200, 255], // blue
             },
@@ -33,7 +31,6 @@ impl AnimationMap {
             "Idle".to_string(),
             AnimationDef {
                 sprite_name: "waiting".to_string(),
-                frame_count: 8,
                 fps: 4.0,
                 color: [100, 200, 100, 255], // green
             },
@@ -42,7 +39,6 @@ impl AnimationMap {
             "Thinking".to_string(),
             AnimationDef {
                 sprite_name: "thinking".to_string(),
-                frame_count: 6,
                 fps: 3.0,
                 color: [150, 100, 200, 255], // purple
             },
@@ -51,7 +47,6 @@ impl AnimationMap {
             "Working".to_string(),
             AnimationDef {
                 sprite_name: "working".to_string(),
-                frame_count: 8,
                 fps: 8.0,
                 color: [200, 150, 50, 255], // orange
             },
@@ -60,7 +55,6 @@ impl AnimationMap {
             "PendingApproval".to_string(),
             AnimationDef {
                 sprite_name: "pending_approval".to_string(),
-                frame_count: 6,
                 fps: 2.0,
                 color: [200, 200, 100, 255], // yellow-orange
             },
@@ -69,7 +63,6 @@ impl AnimationMap {
             "Notify".to_string(),
             AnimationDef {
                 sprite_name: "notify".to_string(),
-                frame_count: 6,
                 fps: 6.0,
                 color: [200, 50, 50, 255], // red
             },
@@ -78,7 +71,6 @@ impl AnimationMap {
             "SubAgentWorking".to_string(),
             AnimationDef {
                 sprite_name: "subagent".to_string(),
-                frame_count: 8,
                 fps: 6.0,
                 color: [200, 200, 50, 255], // yellow
             },
@@ -87,7 +79,6 @@ impl AnimationMap {
             "Error".to_string(),
             AnimationDef {
                 sprite_name: "error".to_string(),
-                frame_count: 4,
                 fps: 2.0,
                 color: [200, 50, 50, 255], // red
             },
@@ -114,7 +105,6 @@ impl AnimationMap {
             .cloned()
             .unwrap_or_else(|| AnimationDef {
                 sprite_name: "unknown".to_string(),
-                frame_count: 1,
                 fps: 1.0,
                 color: [128, 128, 128, 255],
             })
