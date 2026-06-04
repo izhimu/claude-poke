@@ -2,7 +2,7 @@ use super::wayland_window::WaylandWindow;
 use crate::config::WindowConfig;
 use anyhow::Result;
 use log::{debug, error, info, warn};
-use pixels::{PixelsBuilder, SurfaceTexture};
+use pixels::{Pixels, PixelsBuilder, SurfaceTexture};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
@@ -65,12 +65,11 @@ pub fn spawn_layer_renderer(config: &WindowConfig) -> Result<mpsc::Sender<Option
     let (tx, rx) = mpsc::channel::<Option<FrameData>>();
     let width = config.width;
     let height = config.height;
-    let scale = config.scale;
 
     std::thread::Builder::new()
         .name("wayland-layer".into())
         .spawn(move || {
-            if let Err(e) = run_layer_surface(width, height, scale, rx) {
+            if let Err(e) = run_layer_surface(width, height, rx) {
                 error!("Layer surface render thread error: {}", e);
             }
         })?;
@@ -82,12 +81,8 @@ pub fn spawn_layer_renderer(config: &WindowConfig) -> Result<mpsc::Sender<Option
 fn run_layer_surface(
     logical_w: u32,
     logical_h: u32,
-    scale: u32,
     frame_rx: mpsc::Receiver<Option<FrameData>>,
 ) -> Result<()> {
-    let physical_w = logical_w * scale;
-    let physical_h = logical_h * scale;
-
     // Connect to the Wayland compositor
     let conn = Connection::connect_to_env()?;
     let (globals, mut event_queue) = registry_queue_init::<LayerState>(&conn)?;
@@ -106,15 +101,22 @@ fn run_layer_surface(
     let layer =
         layer_shell.create_layer_surface(&qh, surface.clone(), Layer::Top, Some("claude-poke"), None);
     layer.set_anchor(Anchor::TOP | Anchor::RIGHT);
-    layer.set_size(physical_w, physical_h);
+    // Use logical size; compositor applies its own scale factor
+    layer.set_size(logical_w, logical_h);
     layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+    // Set preferred buffer scale to 1 initially (updated when scale is detected)
+    surface.set_buffer_scale(1);
     // Initial commit to trigger configure
     layer.commit();
 
-    // Create a pixels renderer using the layer surface's wl_surface
+    // Create a WaylandWindow wrapper that implements raw-window-handle traits.
+    // SAFETY: `layer` (and its wl_surface) is stored in LayerState and outlives `wayland_window`.
     let wayland_window = unsafe { WaylandWindow::new(&conn, &layer.wl_surface()) };
-    let surface_texture = SurfaceTexture::new(physical_w, physical_h, &wayland_window);
-    let mut pixels = PixelsBuilder::new(logical_w, logical_h, surface_texture)
+
+    // Create initial pixels renderer at logical size (will be rebuilt when scale is known).
+    // `wayland_window` is moved into SurfaceTexture; Pixels borrows the handle internally.
+    let surface_texture = SurfaceTexture::new(logical_w, logical_h, wayland_window);
+    let pixels = PixelsBuilder::new(logical_w, logical_h, surface_texture)
         .clear_color(pixels::wgpu::Color {
             r: 0.0,
             g: 0.0,
@@ -131,19 +133,21 @@ fn run_layer_surface(
         shm,
 
         layer,
-        width: physical_w,
-        height: physical_h,
+        conn,
+        logical_w,
+        logical_h,
+        scale: 1,
+        width: logical_w,
+        height: logical_h,
         configured: false,
         frame_data: None,
         exit: false,
+        pixels,
 
         pointer: None,
     };
 
-    info!(
-        "Layer surface created ({}x{}, logical {}x{})",
-        physical_w, physical_h, logical_w, logical_h
-    );
+    info!("Layer surface created (logical {}x{})", logical_w, logical_h);
 
     // Main event loop: dispatch Wayland events + render frames
     loop {
@@ -161,10 +165,10 @@ fn run_layer_surface(
         // Render if we have frame data and the surface is configured
         if state.configured {
             if let Some(ref data) = state.frame_data {
-                let frame = pixels.frame_mut();
+                let frame = state.pixels.frame_mut();
                 let len = frame.len().min(data.len());
                 frame[..len].copy_from_slice(&data[..len]);
-                if let Err(e) = pixels.render() {
+                if let Err(e) = state.pixels.render() {
                     warn!("Render error: {}", e);
                 }
                 // Damage the entire surface
@@ -198,11 +202,16 @@ struct LayerState {
     shm: Shm,
 
     layer: LayerSurface,
+    conn: Connection,
+    logical_w: u32,
+    logical_h: u32,
+    scale: i32,
     width: u32,
     height: u32,
     configured: bool,
     frame_data: Option<FrameData>,
     exit: bool,
+    pixels: Pixels<'static>,
 
     pointer: Option<wl_pointer::WlPointer>,
 }
@@ -212,9 +221,47 @@ impl CompositorHandler for LayerState {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _new_factor: i32,
+        surface: &wl_surface::WlSurface,
+        new_factor: i32,
     ) {
+        if new_factor == self.scale {
+            return;
+        }
+        info!("Compositor scale factor changed: {} -> {}", self.scale, new_factor);
+        self.scale = new_factor;
+        let new_w = self.logical_w * new_factor as u32;
+        let new_h = self.logical_h * new_factor as u32;
+
+        // Update buffer scale so compositor knows the buffer resolution
+        surface.set_buffer_scale(new_factor);
+
+        // Recreate the pixel buffer at the new physical size
+        // SAFETY: `self.layer` (and its wl_surface) outlives `self.pixels`.
+        let wayland_window = unsafe { WaylandWindow::new(&self.conn, surface) };
+        let surface_texture = SurfaceTexture::new(new_w, new_h, wayland_window);
+        match PixelsBuilder::new(new_w, new_h, surface_texture)
+            .clear_color(pixels::wgpu::Color {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.0,
+            })
+            .alpha_mode(pixels::wgpu::CompositeAlphaMode::PreMultiplied)
+            .build()
+        {
+            Ok(new_pixels) => {
+                self.pixels = new_pixels;
+                self.width = new_w;
+                self.height = new_h;
+                // Resize the layer surface to the new physical size
+                self.layer.set_size(new_w, new_h);
+                self.layer.commit();
+                info!("Pixel buffer recreated at {}x{} (physical)", new_w, new_h);
+            }
+            Err(e) => {
+                error!("Failed to recreate pixel buffer at {}x{}: {}", new_w, new_h, e);
+            }
+        }
     }
 
     fn transform_changed(

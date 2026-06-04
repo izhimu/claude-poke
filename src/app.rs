@@ -1,12 +1,14 @@
 use crate::animation::{AnimationMap, FrameManager, SpriteSheet};
 use crate::animation::sprite_sheet::create_placeholder_sprite;
-use crate::config::{get_assets_dir, get_http_port, WindowConfig};
+use crate::config::{get_assets_dir, get_http_port, WindowConfig, SPRITE_SIZE};
 use crate::monitor::HttpServer;
 #[cfg(target_os = "windows")]
 use crate::render::GdiRenderer;
 #[cfg(not(target_os = "windows"))]
 use crate::render::PetRenderer;
 use crate::state::{PetState, StateMachine, StatusFile};
+#[cfg(feature = "tray")]
+use crate::system::tray::{SystemTray, MENU_ALWAYS_ON_TOP, MENU_QUIT, MENU_SHOW_HIDE};
 
 use anyhow::Result;
 use log::{debug, error, info, warn};
@@ -16,7 +18,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::window::{Window, WindowId};
+use winit::window::{Window, WindowId, WindowLevel};
 
 /// User events for the event loop (from tray, etc.)
 #[derive(Debug)]
@@ -47,6 +49,9 @@ pub struct App {
     _http_server: Option<HttpServer>,
     last_state: PetState,
     visible: bool,
+    always_on_top: bool,
+    #[cfg(feature = "tray")]
+    _tray: Option<SystemTray>,
     /// Channel to send frame data to the Wayland layer surface render thread.
     #[cfg(target_os = "linux")]
     layer_tx: Option<mpsc::Sender<Option<Vec<u8>>>>,
@@ -60,6 +65,19 @@ impl App {
         #[cfg(target_os = "linux")]
         let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
 
+        // Initialize system tray (feature-gated)
+        #[cfg(feature = "tray")]
+        let _tray = match SystemTray::new() {
+            Ok(t) => {
+                info!("System tray initialized");
+                Some(t)
+            }
+            Err(e) => {
+                warn!("Failed to create system tray: {}", e);
+                None
+            }
+        };
+
         Self {
             window: None,
             renderer: None,
@@ -72,6 +90,9 @@ impl App {
             _http_server: None,
             last_state: PetState::Sleeping,
             visible: true,
+            always_on_top: true,
+            #[cfg(feature = "tray")]
+            _tray,
             #[cfg(target_os = "linux")]
             layer_tx: None,
             #[cfg(target_os = "linux")]
@@ -95,6 +116,8 @@ impl App {
         let state = self.state_machine.current().clone();
         let anim_def = self.animation_map.get(&state);
         let frame_idx = self.frame_manager.current_frame();
+        let win_w = self.config.width;
+        let win_h = self.config.height;
 
         // Try to load sprite sheet, fall back to placeholder
         let sprite_path = self
@@ -102,24 +125,26 @@ impl App {
             .join("sprites")
             .join(format!("{}.png", anim_def.sprite_name));
 
-        let sprite_data = if sprite_path.exists() {
-            match SpriteSheet::load(&sprite_path, self.config.width, self.config.height) {
-                Ok(sheet) => sheet.frame_data(frame_idx),
+        if sprite_path.exists() {
+            // Load at native sprite resolution, then upscale to window size
+            match SpriteSheet::load(&sprite_path, SPRITE_SIZE, SPRITE_SIZE) {
+                Ok(sheet) => {
+                    let native = sheet.frame_data(frame_idx);
+                    return nearest_neighbor_scale(&native, SPRITE_SIZE, SPRITE_SIZE, win_w, win_h);
+                }
                 Err(e) => {
                     warn!("Failed to load sprite {}: {}", sprite_path.display(), e);
-                    create_placeholder_sprite(self.config.width, self.config.height, anim_def.color)
                 }
             }
-        } else {
-            let brightness_mod = ((frame_idx as f32 / anim_def.frame_count as f32) * 20.0) as u8;
-            let mut color = anim_def.color;
-            color[0] = color[0].saturating_add(brightness_mod);
-            color[1] = color[1].saturating_add(brightness_mod);
-            color[2] = color[2].saturating_add(brightness_mod);
-            create_placeholder_sprite(self.config.width, self.config.height, color)
-        };
+        }
 
-        sprite_data
+        // Placeholder: generate at window size directly
+        let brightness_mod = ((frame_idx as f32 / anim_def.frame_count as f32) * 20.0) as u8;
+        let mut color = anim_def.color;
+        color[0] = color[0].saturating_add(brightness_mod);
+        color[1] = color[1].saturating_add(brightness_mod);
+        color[2] = color[2].saturating_add(brightness_mod);
+        create_placeholder_sprite(win_w, win_h, color)
     }
 
     /// Render a single frame using the pixels renderer (X11 path).
@@ -206,22 +231,25 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
 
-        let (physical_w, physical_h) = self.config.physical_size();
+        let (logical_w, logical_h) = self.config.logical_size();
 
         let attrs = crate::render::window::pet_window_attributes(
             "Claude Poke",
-            physical_w,
-            physical_h,
+            logical_w,
+            logical_h,
         );
 
         match event_loop.create_window(attrs) {
             Ok(window) => {
-                // Position window at bottom-right of screen
+                // Position window at bottom-right of screen (using physical coordinates)
                 if let Some(monitor) = window.current_monitor() {
+                    let scale = monitor.scale_factor();
                     let screen_size = monitor.size();
                     let margin = 20;
-                    let x = screen_size.width as i32 - physical_w as i32 - margin;
-                    let y = screen_size.height as i32 - physical_h as i32 - margin;
+                    let phys_w = (logical_w as f64 * scale) as u32;
+                    let phys_h = (logical_h as f64 * scale) as u32;
+                    let x = screen_size.width as i32 - phys_w as i32 - margin;
+                    let y = screen_size.height as i32 - phys_h as i32 - margin;
                     window.set_outer_position(PhysicalPosition::new(x, y));
                 }
 
@@ -236,7 +264,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
 
                 self.window = Some(window);
-                info!("Window created ({}x{})", physical_w, physical_h);
+                info!("Window created (logical {}x{})", logical_w, logical_h);
             }
             Err(e) => {
                 error!("Failed to create window: {}", e);
@@ -258,6 +286,13 @@ impl ApplicationHandler<UserEvent> for App {
                 self.visible = !self.visible;
                 if let Some(window) = &self.window {
                     window.set_visible(self.visible);
+                    if self.visible && self.always_on_top {
+                        window.set_window_level(WindowLevel::AlwaysOnTop);
+                    }
+                }
+                #[cfg(feature = "tray")]
+                if let Some(ref tray) = self._tray {
+                    tray.set_visibility_label(self.visible);
                 }
             }
             UserEvent::TrayQuit => {
@@ -321,6 +356,53 @@ impl ApplicationHandler<UserEvent> for App {
         self.state_machine.tick();
         self.frame_manager.update();
 
+        // Poll system tray menu events
+        #[cfg(feature = "tray")]
+        if let Some(ref tray) = self._tray {
+            if let Some(id) = tray.try_recv_menu_event() {
+                match id.as_str() {
+                    MENU_SHOW_HIDE => {
+                        self.visible = !self.visible;
+                        if let Some(window) = &self.window {
+                            window.set_visible(self.visible);
+                            if self.visible && self.always_on_top {
+                                window.set_window_level(WindowLevel::AlwaysOnTop);
+                            }
+                        }
+                        tray.set_visibility_label(self.visible);
+                    }
+                    MENU_ALWAYS_ON_TOP => {
+                        self.always_on_top = !self.always_on_top;
+                        if let Some(window) = &self.window {
+                            if self.always_on_top {
+                                window.set_window_level(WindowLevel::AlwaysOnTop);
+                            } else {
+                                window.set_window_level(WindowLevel::Normal);
+                            }
+                        }
+                        tray.set_always_on_top(self.always_on_top);
+                    }
+                    MENU_QUIT => {
+                        info!("Quit requested from tray");
+                        self.window = None;
+                        self.renderer = None;
+                        #[cfg(target_os = "linux")]
+                        {
+                            if let Some(tx) = self.layer_tx.take() {
+                                let _ = tx.send(None);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Pump the GLib main context so that libappindicator can serve
+            // D-Bus property reads from the desktop shell (StatusNotifierItem).
+            #[cfg(target_os = "linux")]
+            while gtk::glib::MainContext::default().iteration(false) {}
+        }
+
         // Sleep until the next animation frame is due, avoiding busy-wait.
         let next_frame = self.frame_manager.next_frame_deadline();
         event_loop.set_control_flow(ControlFlow::WaitUntil(next_frame));
@@ -337,6 +419,21 @@ impl ApplicationHandler<UserEvent> for App {
             window.request_redraw();
         }
     }
+}
+
+/// Nearest-neighbor upscale RGBA pixel data (preserves pixel-art crispness).
+fn nearest_neighbor_scale(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
+    let mut dst = vec![0u8; (dst_w * dst_h * 4) as usize];
+    for y in 0..dst_h {
+        let src_y = (y * src_h / dst_h) as usize;
+        for x in 0..dst_w {
+            let src_x = (x * src_w / dst_w) as usize;
+            let si = (src_y * src_w as usize + src_x) * 4;
+            let di = (y * dst_w + x) as usize * 4;
+            dst[di..di + 4].copy_from_slice(&src[si..si + 4]);
+        }
+    }
+    dst
 }
 
 /// Run the application.

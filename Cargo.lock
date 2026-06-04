@@ -510,6 +510,7 @@ dependencies = [
  "cocoa",
  "dirs",
  "env_logger",
+ "gtk",
  "image",
  "log",
  "objc",
