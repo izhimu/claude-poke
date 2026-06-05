@@ -10,7 +10,7 @@ tray = ["dep:ksni"]
 
 [dependencies]
 winit = "0.30"
-pixels = "0.17"
+softbuffer = "0.4"
 image = { version = "0.25", features = ["png"] }
 tiny_http = "0.12"
 sysinfo = "0.33"
@@ -53,6 +53,7 @@ priority = "optional"
 assets = [
     ["target/release/claude-poke", "usr/bin/", "755"],
     ["assets/sprites/*.png", "usr/share/claude-poke/sprites/", "644"],
+    ["assets/icon/claude-poke-128.png", "usr/share/icons/hicolor/128x128/apps/claude-poke.png", "644"],
     ["debian/claude-poke.desktop", "usr/share/applications/", "644"],
 ]
 [package.metadata.deb.variants.minimal]

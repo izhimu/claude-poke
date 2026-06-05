@@ -2,6 +2,7 @@ use crate::animation::{AnimationMap, FrameManager, SpriteSheet};
 use crate::animation::sprite_sheet::create_placeholder_sprite;
 use crate::config::{get_assets_dir, get_http_port, WindowConfig, SPRITE_SIZE};
 use crate::monitor::HttpServer;
+use std::collections::HashMap;
 #[cfg(target_os = "windows")]
 use crate::render::GdiRenderer;
 #[cfg(not(target_os = "windows"))]
@@ -19,6 +20,9 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId, WindowLevel};
+
+#[cfg(not(target_os = "windows"))]
+type SoftContext = softbuffer::Context<winit::event_loop::OwnedDisplayHandle>;
 
 /// User events for the event loop.
 /// Currently unused — tray events flow through mpsc channel instead.
@@ -45,6 +49,9 @@ pub struct App {
     _http_server: Option<HttpServer>,
     visible: bool,
     always_on_top: bool,
+    /// Softbuffer context for software rendering (no GPU).
+    #[cfg(not(target_os = "windows"))]
+    softbuffer_context: Option<SoftContext>,
     #[cfg(all(feature = "tray", target_os = "linux"))]
     tray: Option<SystemTray>,
     /// Channel to send frame data to the Wayland layer surface render thread.
@@ -53,6 +60,13 @@ pub struct App {
     /// Whether we're running on Wayland (layer surface mode).
     #[cfg(target_os = "linux")]
     is_wayland: bool,
+    /// Cache of loaded sprite sheets keyed by sprite name.
+    /// Avoids re-reading and decoding PNGs from disk every frame.
+    sprite_cache: HashMap<String, SpriteSheet>,
+    /// Whether a new frame needs to be rendered.
+    /// Set on state change or animation frame advance; cleared after rendering.
+    /// Prevents redundant present() calls that trigger compositor wake-up loops.
+    needs_render: bool,
 }
 
 impl App {
@@ -85,12 +99,16 @@ impl App {
             _http_server: None,
             visible: true,
             always_on_top: true,
+            #[cfg(not(target_os = "windows"))]
+            softbuffer_context: None,
             #[cfg(all(feature = "tray", target_os = "linux"))]
             tray,
             #[cfg(target_os = "linux")]
             layer_tx: None,
             #[cfg(target_os = "linux")]
             is_wayland,
+            sprite_cache: HashMap::new(),
+            needs_render: true,
         }
     }
 
@@ -112,30 +130,37 @@ impl App {
         let frame_idx = self.frame_manager.current_frame();
         let win_w = self.config.width;
         let win_h = self.config.height;
+        let sprite_name = &anim_def.sprite_name;
 
-        // Try to load sprite sheet, fall back to placeholder
-        let sprite_path = self
-            .assets_dir
-            .join("sprites")
-            .join(format!("{}.png", anim_def.sprite_name));
-
-        if sprite_path.exists() {
-            // Load at native sprite resolution, then upscale to window size
-            match SpriteSheet::load(&sprite_path, SPRITE_SIZE, SPRITE_SIZE) {
-                Ok(sheet) => {
-                    // Auto-detect frame count from sprite sheet and update FrameManager
-                    let detected = sheet.frame_count();
-                    if self.frame_manager.frame_count() != detected {
-                        self.frame_manager
-                            .set_animation(detected, anim_def.fps);
+        // Use cached sprite sheet if available, otherwise try to load and cache
+        if !self.sprite_cache.contains_key(sprite_name) {
+            let sprite_path = self
+                .assets_dir
+                .join("sprites")
+                .join(format!("{}.png", sprite_name));
+            if sprite_path.exists() {
+                match SpriteSheet::load(&sprite_path, SPRITE_SIZE, SPRITE_SIZE) {
+                    Ok(sheet) => {
+                        info!("Loaded sprite sheet: {}", sprite_name);
+                        self.sprite_cache.insert(sprite_name.clone(), sheet);
                     }
-                    let native = sheet.frame_data(frame_idx);
-                    return nearest_neighbor_scale(&native, SPRITE_SIZE, SPRITE_SIZE, win_w, win_h);
-                }
-                Err(e) => {
-                    warn!("Failed to load sprite {}: {}", sprite_path.display(), e);
+                    Err(e) => {
+                        warn!("Failed to load sprite {}: {}", sprite_path.display(), e);
+                    }
                 }
             }
+        }
+
+        if let Some(sheet) = self.sprite_cache.get(sprite_name) {
+            // Auto-detect frame count from sprite sheet and update FrameManager.
+            // Use frame_count as a proxy for "needs sync" — if it matches, the
+            // fps was already set correctly in check_status_updates.
+            let detected = sheet.frame_count();
+            if self.frame_manager.frame_count() != detected {
+                self.frame_manager.set_animation(detected, anim_def.fps);
+            }
+            let native = sheet.frame_data(frame_idx);
+            return nearest_neighbor_scale(&native, SPRITE_SIZE, SPRITE_SIZE, win_w, win_h);
         }
 
         // Placeholder: generate at window size directly
@@ -198,6 +223,7 @@ impl App {
                 let anim_def = self.animation_map.get(&new_state);
                 // Frame count is auto-detected from the sprite sheet in build_frame
                 self.frame_manager.set_animation(0, anim_def.fps);
+                self.needs_render = true;
                 info!("State changed to: {}", new_state);
             }
         }
@@ -258,6 +284,22 @@ impl ApplicationHandler<UserEvent> for App {
                     window.set_outer_position(PhysicalPosition::new(x, y));
                 }
 
+                #[cfg(not(target_os = "windows"))]
+                if let Some(ref ctx) = self.softbuffer_context {
+                    // SAFETY: ctx and window are stored in App and outlive the renderer.
+                    let ctx_ref: &'static SoftContext = unsafe { &*(ctx as *const SoftContext) };
+                    let window_ref: &'static Window = unsafe { &*(&window as *const Window) };
+                    match unsafe { PetRenderer::new(ctx_ref, window_ref, &self.config) } {
+                        Ok(renderer) => {
+                            self.renderer = Some(renderer);
+                            info!("Renderer initialized (softbuffer, no GPU)");
+                        }
+                        Err(e) => {
+                            error!("Failed to create renderer: {}", e);
+                        }
+                    }
+                }
+                #[cfg(target_os = "windows")]
                 match Renderer::new(&window, &self.config) {
                     Ok(renderer) => {
                         self.renderer = Some(renderer);
@@ -333,7 +375,9 @@ impl ApplicationHandler<UserEvent> for App {
         // Check for status updates and apply deferred state transitions
         self.check_status_updates(event_loop);
         self.state_machine.tick();
-        self.frame_manager.update();
+        if self.frame_manager.update() {
+            self.needs_render = true;
+        }
 
         // Poll system tray menu events (drain all pending events per frame)
         #[cfg(all(feature = "tray", target_os = "linux"))]
@@ -376,20 +420,36 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
 
-        // Sleep until the next animation frame is due, avoiding busy-wait.
-        let next_frame = self.frame_manager.next_frame_deadline();
-        event_loop.set_control_flow(ControlFlow::WaitUntil(next_frame));
+        // Only render when something actually changed.
+        // Rendering unconditionally triggers compositor events that re-wake
+        // the event loop, causing a busy-wait CPU spin.
+        if self.needs_render {
+            self.needs_render = false;
 
-        #[cfg(target_os = "linux")]
-        if self.layer_tx.is_some() {
-            // On Wayland with layer surface: send frame data to render thread
-            self.send_frame_to_layer();
-            return;
+            #[cfg(target_os = "linux")]
+            if self.layer_tx.is_some() {
+                self.send_frame_to_layer();
+                let fc = self.frame_manager.frame_count();
+                if fc <= 1 {
+                    event_loop.set_control_flow(ControlFlow::Wait);
+                } else {
+                    let next_frame = self.frame_manager.next_frame_deadline();
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(next_frame));
+                }
+                return;
+            }
+
+            self.render_frame();
         }
 
-        // On X11 (or Wayland fallback): request redraw for the winit window
-        if let Some(window) = &self.window {
-            window.request_redraw();
+        // Set control flow AFTER rendering — build_frame() may have loaded a
+        // sprite sheet and updated the frame count via set_animation().
+        let fc = self.frame_manager.frame_count();
+        if fc <= 1 {
+            event_loop.set_control_flow(ControlFlow::Wait);
+        } else {
+            let next_frame = self.frame_manager.next_frame_deadline();
+            event_loop.set_control_flow(ControlFlow::WaitUntil(next_frame));
         }
     }
 }
@@ -436,7 +496,24 @@ pub fn run() -> Result<()> {
     }
     let event_loop = builder.build()?;
 
+    // Create softbuffer context for software rendering (no GPU needed).
+    #[cfg(not(target_os = "windows"))]
+    let softbuffer_ctx = match softbuffer::Context::new(event_loop.owned_display_handle()) {
+        Ok(ctx) => {
+            info!("Softbuffer context created (software rendering, no GPU)");
+            Some(ctx)
+        }
+        Err(e) => {
+            error!("Failed to create softbuffer context: {e}");
+            None
+        }
+    };
+
     let mut app = App::new();
+    #[cfg(not(target_os = "windows"))]
+    {
+        app.softbuffer_context = softbuffer_ctx;
+    }
     app.start_monitoring()?;
 
     event_loop.run_app(&mut app)?;

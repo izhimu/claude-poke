@@ -1,102 +1,108 @@
 use crate::config::WindowConfig;
 use anyhow::Result;
 use log::debug;
-use pixels::{Pixels, PixelsBuilder, SurfaceTexture};
+use softbuffer::{Context, Surface};
+use std::num::NonZeroU32;
+use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
 
-/// The pixel renderer that manages the pixel buffer and rendering.
-/// Contains both the window and the pixel buffer to avoid lifetime issues.
+type SoftContext = Context<OwnedDisplayHandle>;
+
+/// Software-based pixel renderer using softbuffer (no GPU context).
+///
+/// Unlike the previous pixels/wgpu backend, this uses platform-native
+/// software rendering (XShm on X11, wl_shm on Wayland, Core Graphics on macOS),
+/// eliminating ~100MB of GPU driver overhead.
 pub struct PetRenderer {
-    pixels: Pixels<'static>,
+    surface: Surface<OwnedDisplayHandle, &'static Window>,
+    buffer: Vec<u32>,
     width: u32,
     height: u32,
 }
 
 impl PetRenderer {
     /// Create a new renderer for the given window.
-    /// This takes ownership of the window by leaking its reference
-    /// and reconstructing it with a 'static lifetime.
-    /// SAFETY: The window must outlive the renderer. This is guaranteed
-    /// because both are stored in the same App struct and dropped together.
-    pub fn new(window: &Window, config: &WindowConfig) -> Result<Self> {
+    ///
+    /// # Safety
+    /// The `context` and `window` must outlive the renderer. This is guaranteed
+    /// because both are stored in the App struct and dropped after the renderer.
+    pub unsafe fn new(
+        context: &'static SoftContext,
+        window: &'static Window,
+        config: &WindowConfig,
+    ) -> Result<Self> {
         let (logical_w, logical_h) = config.logical_size();
         let window_size = window.inner_size();
+        let buf_w = window_size.width.max(1);
+        let buf_h = window_size.height.max(1);
 
-        // SAFETY: We leak the window reference to get 'static.
-        // This is safe because the window is stored in App and dropped after the renderer.
-        let window_ref: &'static Window = unsafe { &*(window as *const Window) };
-        let surface_texture =
-            SurfaceTexture::new(window_size.width, window_size.height, window_ref);
+        let mut surface = Surface::new(context, window)
+            .map_err(|e| anyhow::anyhow!("softbuffer Surface::new: {e}"))?;
+        surface.resize(
+            NonZeroU32::new(buf_w).unwrap(),
+            NonZeroU32::new(buf_h).unwrap(),
+        ).map_err(|e| anyhow::anyhow!("softbuffer resize: {e}"))?;
 
-        // Use PixelsBuilder to configure transparency support:
-        // - clear_color with alpha=0 so the background is transparent
-        // - alpha_mode PreMultiplied for proper transparent compositing
-        let pixels = PixelsBuilder::new(logical_w, logical_h, surface_texture)
-            .clear_color(pixels::wgpu::Color {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 0.0,
-            })
-            .alpha_mode(pixels::wgpu::CompositeAlphaMode::PreMultiplied)
-            .build()?;
         debug!(
-            "Surface format: {:?}, alpha modes: {:?}",
-            pixels.surface_texture_format(),
-            pixels.context().surface_capabilities.alpha_modes
+            "Softbuffer renderer initialized: {}x{} (physical), {}x{} (logical)",
+            buf_w, buf_h, logical_w, logical_h
         );
 
         Ok(Self {
-            pixels,
-            width: logical_w,
-            height: logical_h,
+            surface,
+            buffer: vec![0u32; (buf_w * buf_h) as usize],
+            width: buf_w,
+            height: buf_h,
         })
     }
 
-    /// Get a mutable reference to the pixel frame buffer.
-    #[allow(dead_code)]
-    pub fn frame_mut(&mut self) -> &mut [u8] {
-        self.pixels.frame_mut()
-    }
-
-    /// Get the logical width of the pixel buffer.
+    /// Get the physical width of the pixel buffer.
     #[allow(dead_code)]
     pub fn width(&self) -> u32 {
         self.width
     }
 
-    /// Get the logical height of the pixel buffer.
+    /// Get the physical height of the pixel buffer.
     #[allow(dead_code)]
     pub fn height(&self) -> u32 {
         self.height
     }
 
-    /// Render the pixel buffer to the screen.
-    pub fn render(&self) -> Result<()> {
-        self.pixels.render()?;
+    /// Present the pixel buffer to the screen.
+    pub fn render(&mut self) -> Result<()> {
+        let mut sb_buf = self.surface.buffer_mut()
+            .map_err(|e| anyhow::anyhow!("softbuffer buffer_mut: {e}"))?;
+        let len = self.buffer.len().min(sb_buf.len());
+        sb_buf[..len].copy_from_slice(&self.buffer[..len]);
+        sb_buf.present()
+            .map_err(|e| anyhow::anyhow!("softbuffer present: {e}"))?;
         Ok(())
     }
 
     /// Resize the surface when the window size changes.
     pub fn resize_surface(&mut self, width: u32, height: u32) -> Result<()> {
-        self.pixels.resize_surface(width, height)?;
+        if width == 0 || height == 0 {
+            return Ok(());
+        }
+        self.surface.resize(
+            NonZeroU32::new(width).unwrap(),
+            NonZeroU32::new(height).unwrap(),
+        ).map_err(|e| anyhow::anyhow!("softbuffer resize: {e}"))?;
+        self.buffer.resize((width * height) as usize, 0);
+        self.width = width;
+        self.height = height;
         Ok(())
     }
 
-    /// Clear the frame buffer with a transparent background.
-    /// Note: Pixel buffer format is BGRA, but setting all to 0 works regardless.
+    /// Clear the frame buffer with transparent pixels.
     pub fn clear(&mut self) {
-        let frame = self.pixels.frame_mut();
-        for pixel in frame.chunks_exact_mut(4) {
-            pixel[0] = 0; // B (or R in RGBA - doesn't matter when all 0)
-            pixel[1] = 0; // G
-            pixel[2] = 0; // R (or B in RGBA - doesn't matter when all 0)
-            pixel[3] = 0; // A (transparent)
-        }
+        self.buffer.fill(0);
     }
 
     /// Draw a sprite from raw RGBA data at the given position.
-    /// sprite_data: raw RGBA pixels, sprite_w/sprite_h: sprite dimensions
+    /// Performs alpha blending with the existing buffer contents.
+    /// Sprite data is RGBA bytes (from the `image` crate).
+    /// Buffer format is ARGB8888 u32 (softbuffer native format on Linux).
     pub fn draw_sprite(
         &mut self,
         sprite_data: &[u8],
@@ -105,37 +111,48 @@ impl PetRenderer {
         offset_x: u32,
         offset_y: u32,
     ) {
-        let frame = self.pixels.frame_mut();
         let frame_w = self.width as usize;
+        let frame_h = self.height as usize;
 
-        for y in 0..sprite_h as usize {
-            for x in 0..sprite_w as usize {
-                let src_idx = (y * sprite_w as usize + x) * 4;
-                let dst_x = offset_x as usize + x;
-                let dst_y = offset_y as usize + y;
+        // Calculate scale factors (physical buffer / logical sprite)
+        let scale_x = frame_w as f32 / sprite_w as f32;
+        let scale_y = frame_h as f32 / sprite_h as f32;
 
-                if dst_x >= frame_w || dst_y >= self.height as usize {
+        for y in 0..frame_h {
+            for x in 0..frame_w {
+                // Map physical pixel back to sprite pixel (nearest-neighbor)
+                let src_x = ((x as f32 - offset_x as f32) / scale_x) as usize;
+                let src_y = ((y as f32 - offset_y as f32) / scale_y) as usize;
+
+                if src_x >= sprite_w as usize || src_y >= sprite_h as usize {
                     continue;
                 }
 
-                let dst_idx = (dst_y * frame_w + dst_x) * 4;
+                let src_idx = (src_y * sprite_w as usize + src_x) * 4;
+                let dst_idx = y * frame_w + x;
 
-                if src_idx + 3 < sprite_data.len() && dst_idx + 3 < frame.len() {
-                    let a = sprite_data[src_idx + 3] as f32 / 255.0;
-                    if a > 0.0 {
-                        // Pre-multiplied alpha blending:
-                        // src is straight alpha from sprite, convert to pre-multiplied
-                        let inv_a = 1.0 - a;
-                        frame[dst_idx] =
-                            (sprite_data[src_idx] as f32 * a + frame[dst_idx] as f32 * inv_a) as u8;
-                        frame[dst_idx + 1] =
-                            (sprite_data[src_idx + 1] as f32 * a
-                                + frame[dst_idx + 1] as f32 * inv_a) as u8;
-                        frame[dst_idx + 2] =
-                            (sprite_data[src_idx + 2] as f32 * a
-                                + frame[dst_idx + 2] as f32 * inv_a) as u8;
-                        frame[dst_idx + 3] =
-                            (a * 255.0 + frame[dst_idx + 3] as f32 * inv_a) as u8;
+                if src_idx + 3 < sprite_data.len() && dst_idx < self.buffer.len() {
+                    let a = sprite_data[src_idx + 3] as u32;
+                    if a > 0 {
+                        let r = sprite_data[src_idx] as u32;
+                        let g = sprite_data[src_idx + 1] as u32;
+                        let b = sprite_data[src_idx + 2] as u32;
+
+                        let dst = self.buffer[dst_idx];
+                        let dst_a = (dst >> 24) & 0xFF;
+                        let dst_r = (dst >> 16) & 0xFF;
+                        let dst_g = (dst >> 8) & 0xFF;
+                        let dst_b = dst & 0xFF;
+
+                        // Alpha blending (pre-multiplied style)
+                        let inv_a = 255 - a;
+                        let out_a = a + (dst_a * inv_a) / 255;
+                        let out_r = (r * a + dst_r * inv_a) / 255;
+                        let out_g = (g * a + dst_g * inv_a) / 255;
+                        let out_b = (b * a + dst_b * inv_a) / 255;
+
+                        self.buffer[dst_idx] =
+                            (out_a << 24) | (out_r << 16) | (out_g << 8) | out_b;
                     }
                 }
             }

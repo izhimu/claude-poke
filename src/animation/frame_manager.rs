@@ -28,8 +28,11 @@ impl FrameManager {
     }
 
     /// Update the animation. Returns true if the frame changed.
+    /// For single-frame animations (frame_count <= 1), always returns false
+    /// but keeps the deadline fresh so WaitUntil sleeps instead of busy-looping.
     pub fn update(&mut self) -> bool {
         if self.frame_count <= 1 {
+            self.last_frame_time = Instant::now();
             return false;
         }
 
@@ -66,9 +69,11 @@ impl FrameManager {
     }
 
     /// Change animation parameters (e.g., when state changes).
+    /// A `frame_count` of 0 is treated as 1 (single-frame placeholder).
     pub fn set_animation(&mut self, frame_count: u32, fps: f32) {
-        if self.frame_count != frame_count {
-            self.frame_count = frame_count;
+        let count = frame_count.max(1);
+        if self.frame_count != count {
+            self.frame_count = count;
             self.current_frame = 0;
         }
         self.frame_duration = if fps > 0.0 {

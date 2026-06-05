@@ -2,7 +2,6 @@ use super::wayland_window::WaylandWindow;
 use crate::config::WindowConfig;
 use anyhow::Result;
 use log::{debug, error, info, warn};
-use pixels::{Pixels, PixelsBuilder, SurfaceTexture};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
@@ -23,6 +22,8 @@ use smithay_client_toolkit::{
     },
     shm::{Shm, ShmHandler},
 };
+use softbuffer::{Context, Surface};
+use std::num::NonZeroU32;
 use std::sync::mpsc;
 use wayland_client::{
     globals::registry_queue_init,
@@ -109,22 +110,22 @@ fn run_layer_surface(
     // Initial commit to trigger configure
     layer.commit();
 
-    // Create a WaylandWindow wrapper that implements raw-window-handle traits.
-    // SAFETY: `layer` (and its wl_surface) is stored in LayerState and outlives `wayland_window`.
-    let wayland_window = unsafe { WaylandWindow::new(&conn, &layer.wl_surface()) };
+    // Create softbuffer context and surface for software rendering (no GPU).
+    // WaylandWindow is a thin wrapper around raw pointers — safe to create two
+    // instances pointing to the same underlying wl_surface.
+    let wayland_window_ctx = unsafe { WaylandWindow::new(&conn, &layer.wl_surface()) };
+    let context = Context::new(wayland_window_ctx)
+        .map_err(|e| anyhow::anyhow!("softbuffer Context::new: {e}"))?;
 
-    // Create initial pixels renderer at logical size (will be rebuilt when scale is known).
-    // `wayland_window` is moved into SurfaceTexture; Pixels borrows the handle internally.
-    let surface_texture = SurfaceTexture::new(logical_w, logical_h, wayland_window);
-    let pixels = PixelsBuilder::new(logical_w, logical_h, surface_texture)
-        .clear_color(pixels::wgpu::Color {
-            r: 0.0,
-            g: 0.0,
-            b: 0.0,
-            a: 0.0,
-        })
-        .alpha_mode(pixels::wgpu::CompositeAlphaMode::PreMultiplied)
-        .build()?;
+    // SAFETY: `context` is stored in LayerState and outlives the surface.
+    // Both are dropped together when the thread exits.
+    let ctx_ref: &'static Context<WaylandWindow> = unsafe { &*(&context as *const _) };
+    let wayland_window_surface = unsafe { WaylandWindow::new(&conn, &layer.wl_surface()) };
+    let soft_surface = Surface::new(ctx_ref, wayland_window_surface)
+        .map_err(|e| anyhow::anyhow!("softbuffer Surface::new: {e}"))?;
+
+    let buf_w = logical_w.max(1);
+    let buf_h = logical_h.max(1);
 
     let mut state = LayerState {
         registry_state,
@@ -142,19 +143,25 @@ fn run_layer_surface(
         configured: false,
         frame_data: None,
         exit: false,
-        pixels,
+        context,
+        surface: Some(soft_surface),
+        buffer: vec![0u32; (buf_w * buf_h) as usize],
 
         pointer: None,
     };
 
-    info!("Layer surface created (logical {}x{})", logical_w, logical_h);
+    info!("Layer surface created (logical {}x{}, softbuffer)", logical_w, logical_h);
 
     // Main event loop: dispatch Wayland events + render frames
     loop {
         // Non-blocking check for new frame data from main thread
+        let mut new_frame = false;
         while let Ok(data) = frame_rx.try_recv() {
             match data {
-                Some(frame) => state.frame_data = Some(frame),
+                Some(frame) => {
+                    state.frame_data = Some(frame);
+                    new_frame = true;
+                }
                 None => {
                     info!("Render thread received exit signal");
                     return Ok(());
@@ -162,14 +169,36 @@ fn run_layer_surface(
             }
         }
 
-        // Render if we have frame data and the surface is configured
-        if state.configured {
-            if let Some(ref data) = state.frame_data {
-                let frame = state.pixels.frame_mut();
-                let len = frame.len().min(data.len());
-                frame[..len].copy_from_slice(&data[..len]);
-                if let Err(e) = state.pixels.render() {
-                    warn!("Render error: {}", e);
+        // Render only when we have new frame data and the surface is configured.
+        // Avoids re-rendering the same frame 60 times/sec.
+        if new_frame && state.configured {
+            if let (Some(ref data), Some(ref mut surface)) = (&state.frame_data, &mut state.surface)
+            {
+                // Convert RGBA bytes to ARGB u32 and write to softbuffer buffer
+                let w = state.width as usize;
+                let h = state.height as usize;
+                state.buffer.fill(0);
+                for y in 0..h.min(state.height as usize) {
+                    for x in 0..w.min(state.width as usize) {
+                        let src_idx = (y * w + x) * 4;
+                        let dst_idx = y * w + x;
+                        if src_idx + 3 < data.len() && dst_idx < state.buffer.len() {
+                            let r = data[src_idx] as u32;
+                            let g = data[src_idx + 1] as u32;
+                            let b = data[src_idx + 2] as u32;
+                            let a = data[src_idx + 3] as u32;
+                            state.buffer[dst_idx] = (a << 24) | (r << 16) | (g << 8) | b;
+                        }
+                    }
+                }
+
+                // Present the buffer
+                if let Ok(mut sb_buf) = surface.buffer_mut() {
+                    let len = state.buffer.len().min(sb_buf.len());
+                    sb_buf[..len].copy_from_slice(&state.buffer[..len]);
+                    if let Err(e) = sb_buf.present() {
+                        warn!("Softbuffer present error: {}", e);
+                    }
                 }
                 // Damage the entire surface
                 state
@@ -183,8 +212,10 @@ fn run_layer_surface(
         // Dispatch pending Wayland events (non-blocking)
         event_queue.dispatch_pending(&mut state)?;
 
-        // Small sleep to avoid busy-spinning (~60fps)
-        std::thread::sleep(std::time::Duration::from_millis(16));
+        // Sleep until next poll — we only render on new frames, so a longer
+        // sleep is fine. 50ms ≈ 20fps poll rate, adds at most 50ms display
+        // latency which is imperceptible for a desktop pet.
+        std::thread::sleep(std::time::Duration::from_millis(50));
 
         if state.exit {
             break;
@@ -195,6 +226,7 @@ fn run_layer_surface(
 }
 
 /// State for the layer surface event loop.
+#[allow(dead_code)] // conn and context are kept alive for raw pointers / Surface borrow
 struct LayerState {
     registry_state: RegistryState,
     seat_state: SeatState,
@@ -211,7 +243,9 @@ struct LayerState {
     configured: bool,
     frame_data: Option<FrameData>,
     exit: bool,
-    pixels: Pixels<'static>,
+    context: Context<WaylandWindow>,
+    surface: Option<Surface<WaylandWindow, WaylandWindow>>,
+    buffer: Vec<u32>,
 
     pointer: Option<wl_pointer::WlPointer>,
 }
@@ -235,31 +269,20 @@ impl CompositorHandler for LayerState {
         // Update buffer scale so compositor knows the buffer resolution
         surface.set_buffer_scale(new_factor);
 
-        // Recreate the pixel buffer at the new physical size
-        // SAFETY: `self.layer` (and its wl_surface) outlives `self.pixels`.
-        let wayland_window = unsafe { WaylandWindow::new(&self.conn, surface) };
-        let surface_texture = SurfaceTexture::new(new_w, new_h, wayland_window);
-        match PixelsBuilder::new(new_w, new_h, surface_texture)
-            .clear_color(pixels::wgpu::Color {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 0.0,
-            })
-            .alpha_mode(pixels::wgpu::CompositeAlphaMode::PreMultiplied)
-            .build()
-        {
-            Ok(new_pixels) => {
-                self.pixels = new_pixels;
-                self.width = new_w;
-                self.height = new_h;
-                // Resize the layer surface to the new physical size
-                self.layer.set_size(new_w, new_h);
-                self.layer.commit();
-                info!("Pixel buffer recreated at {}x{} (physical)", new_w, new_h);
-            }
-            Err(e) => {
-                error!("Failed to recreate pixel buffer at {}x{}: {}", new_w, new_h, e);
+        // Resize the softbuffer surface to the new physical size
+        if let Some(ref mut soft_surface) = self.surface {
+            if let (Some(nw), Some(nh)) = (NonZeroU32::new(new_w), NonZeroU32::new(new_h)) {
+                if let Err(e) = soft_surface.resize(nw, nh) {
+                    error!("Failed to resize softbuffer surface: {}", e);
+                } else {
+                    self.buffer.resize((new_w * new_h) as usize, 0);
+                    self.width = new_w;
+                    self.height = new_h;
+                    // Resize the layer surface to the new physical size
+                    self.layer.set_size(new_w, new_h);
+                    self.layer.commit();
+                    info!("Softbuffer surface resized to {}x{} (physical)", new_w, new_h);
+                }
             }
         }
     }
