@@ -304,6 +304,36 @@ hooks = {
                 }
             ]
         }
+    ],
+    "Elicitation": [
+        {
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": f"{hook_script} PendingApproval"
+                }
+            ]
+        }
+    ],
+    "ElicitationResult": [
+        {
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": f"{hook_script} Thinking"
+                }
+            ]
+        }
+    ],
+    "WorktreeCreate": [
+        {
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": f"{hook_script} Working"
+                }
+            ]
+        }
     ]
 }
 

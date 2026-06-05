@@ -222,6 +222,36 @@
                     }
                 ]
             }
+        ],
+        "Elicitation": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh PendingApproval"
+                    }
+                ]
+            }
+        ],
+        "ElicitationResult": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Thinking"
+                    }
+                ]
+            }
+        ],
+        "WorktreeCreate": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/path/to/set-status.sh Working"
+                    }
+                ]
+            }
         ]
     }
 }
