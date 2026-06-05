@@ -427,7 +427,14 @@ pub fn run() -> Result<()> {
         }
     }
 
-    let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
+    let mut builder = EventLoop::<UserEvent>::with_user_event();
+    // macOS: set activation policy to Accessory so the app doesn't appear in the Dock or Cmd+Tab.
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+        builder.with_activation_policy(ActivationPolicy::Accessory);
+    }
+    let event_loop = builder.build()?;
 
     let mut app = App::new();
     app.start_monitoring()?;

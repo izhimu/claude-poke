@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Claude Poke
+Comment=Desktop pet reflecting Claude Code status
+Exec=claude-poke
+Icon=claude-poke
+Terminal=false
+Categories=Utility;
+StartupNotify=false

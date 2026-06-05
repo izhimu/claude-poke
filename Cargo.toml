@@ -2,6 +2,7 @@
 name = "claude-poke"
 version = "0.1.0"
 edition = "2021"
+description = "A cross-platform desktop pet that reflects Claude Code's real-time status"
 
 [features]
 default = ["tray"]
@@ -38,3 +39,22 @@ calloop = "0.13"
 [profile.release]
 opt-level = 3
 lto = true
+
+[package.metadata.deb]
+maintainer = "Haoran <haoran@example.com>"
+copyright = "2026, Haoran"
+license-file = ["debian/copyright", "0"]
+extended-description = """\
+A cross-platform desktop pet that reflects Claude Code's real-time status.\
+"""
+depends = "libwayland-client0, libwayland-cursor0, libwayland-egl1, libx11-6, libxcb1"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/claude-poke", "usr/bin/", "755"],
+    ["assets/sprites/*.png", "usr/share/claude-poke/sprites/", "644"],
+    ["debian/claude-poke.desktop", "usr/share/applications/", "644"],
+]
+[package.metadata.deb.variants.minimal]
+# Stripped-down variant without tray icon
+features = []

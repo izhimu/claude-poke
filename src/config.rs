@@ -25,19 +25,22 @@ pub fn get_config_dir() -> PathBuf {
 
 /// Get the path to sprite assets.
 pub fn get_assets_dir() -> PathBuf {
-    // Try exe directory first, then current directory
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()));
 
     let candidates = [
+        // Dev: assets next to the binary (e.g. target/debug/assets)
         exe_dir.clone().map(|d| d.join("assets")),
+        // Dev: assets in current working directory
         Some(PathBuf::from("assets")),
+        // Installed via .deb: /usr/share/claude-poke
+        Some(PathBuf::from("/usr/share/claude-poke")),
     ];
 
     for candidate in &candidates {
         if let Some(path) = candidate {
-            if path.exists() {
+            if path.join("sprites").exists() {
                 return path.clone();
             }
         }
